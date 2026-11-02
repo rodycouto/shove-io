@@ -1,0 +1,114 @@
+{
+  "maps": [
+    {
+      "id": "map_hex_classic",
+      "name": "Arena Hexagonal Clássica",
+      "description": "Plataforma aberta sem obstáculos: pura força no empurrão!",
+      "theme": {
+        "background": "#070812",
+        "platformColor": "#232946",
+        "borderColor": "#ff3366",
+        "centerColor": "#00e5ff"
+      },
+      "physics": {
+        "radius": 12.0,
+        "sides": 6,
+        "friction": 0.88,
+        "moveSpeed": 18.5,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0,
+        "minRadius": 12.0,
+        "pillars": []
+      }
+    },
+    {
+      "id": "map_ice_island",
+      "name": "Ilha de Gelo Escorregadia",
+      "description": "O chão vai fazer você escorregar!",
+      "theme": {
+        "background": "#051329",
+        "platformColor": "#80d8ff",
+        "borderColor": "#00b0ff",
+        "centerColor": "#ffffff"
+      },
+      "physics": {
+        "radius": 12.5,
+        "sides": 12,
+        "friction": 0.955,
+        "moveSpeed": 20.5,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0,
+        "minRadius": 12.5,
+        "pillars": []
+      }
+    },
+    {
+      "id": "map_shrinking_volcano",
+      "name": "Vulcão em Erupção",
+      "description": "Cuidado! A plataforma vai encolher com o tempo!",
+      "theme": {
+        "background": "#160505",
+        "platformColor": "#3e1f1f",
+        "borderColor": "#ff6d00",
+        "centerColor": "#ffd600"
+      },
+      "physics": {
+        "radius": 13.0,
+        "sides": 24,
+        "friction": 0.88,
+        "moveSpeed": 18.5,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0.12,
+        "minRadius": 5.5,
+        "pillars": []
+      }
+    },
+    {
+      "id": "map_donut_ring",
+      "name": "Anel Cósmico (Donut)",
+      "description": "Existe um buraco gigante no centro que puxa os distraídos!",
+      "theme": {
+        "background": "#0b041c",
+        "platformColor": "#311b92",
+        "borderColor": "#aa00ff",
+        "centerColor": "#ff4081"
+      },
+      "physics": {
+        "radius": 13.0,
+        "sides": 32,
+        "friction": 0.88,
+        "moveSpeed": 18.5,
+        "innerHoleRadius": 3.8,
+        "shrinkRate": 0,
+        "minRadius": 13.0,
+        "pillars": []
+      }
+    },
+    {
+      "id": "map_bumper_pillars",
+      "name": "Templo dos Pilares",
+      "description": "Os pilares elásticos rebatem qualquer jogador que encostar neles!",
+      "theme": {
+        "background": "#041410",
+        "platformColor": "#1b4332",
+        "borderColor": "#00e676",
+        "centerColor": "#ffd600"
+      },
+      "physics": {
+        "radius": 12.5,
+        "sides": 8,
+        "friction": 0.88,
+        "moveSpeed": 18.5,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0,
+        "minRadius": 12.5,
+        "pillars": [
+          { "x": 4.5, "z": 4.5, "radius": 1.1, "bounciness": 1.3 },
+          { "x": -4.5, "z": 4.5, "radius": 1.1, "bounciness": 1.3 },
+          { "x": 4.5, "z": -4.5, "radius": 1.1, "bounciness": 1.3 },
+          { "x": -4.5, "z": -4.5, "radius": 1.1, "bounciness": 1.3 }
+        ]
+      }
+    }
+  ]
+}

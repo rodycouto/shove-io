@@ -1,0 +1,40 @@
+Coisas para adicionar no Shove.io
+
+Número de Rounds - Default: 3 - O criador da sala que escolhe - Max: 10
+O botão de pronto não vale para o criador da sala.
+
+Adicionar um fundo para a arena, que dê a percepção de "abismo"
+Os jogadores só podem empurrar/levantar os adversário depois da contagem de 5 segundos que aparece grande na tela
+5, 4, 3, 2, 1 - SHOVE!
+
+ping no canto superior esquerdo para o usuário ver o ping enquanto estiver conectado no jogo
+
+Sistema de níveis, ganho de experiências proporcionais com Shoves, Kills e vitórias
+
+Dados de XP para o usuário na tela de vitória/derrota
+
+O painel de configuração da sala não deve exibir "Visão dos convidados"
+"Como você quer criar sua sala?" - Não deve aparecer para os convidados, deve aparecer "A partida seguirá as configurações abaixo"
+
+
+Os feedbacks que aparecem no canto direito, deve mostrar apenas os jogadores que foram eliminados e quem os eliminou
+
+Antes do jogo começar, deve haver uma apresentação do mapa, com o nome e as peculiaridades dele.
+Exemplo: Ilha de Gelo Escorregadia - O chão vai fazer você escorregar!
+
+
+Lógica de contagem de vitórias, partidas, shoves
+
+Nome na aba do navegador com ícone
+
+
+Lista de salas criadas ao redor do jogo disponível para todos
+Qualquer usuário pode pedir solicitação para entrar na sala e o criador da sala pode aceitar o usuário
+Cada usuário só pode entrar em uma única sala
+O criador da sala pode liberar a entrada na sala para qualquer usuário, deixando a sala livre para todos entrarem até bater o limite de 15 usuários
+
+O criador da sala pode expulsar qualquer jogador da sala
+
+Possibilidade de escolher os mapas 1 ou mais mapas, se escolher 2 ou mais, a escolha é randômica
+
+A cada round, o mapa muda dentro da seleção de mapas
