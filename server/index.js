@@ -51,6 +51,15 @@ app.get('/room/:roomId', (req, res) => {
 
 const roomManager = new RoomManager(io);
 
+// Alias defensivo caso algum módulo externo chame removePlayer(socketOrId)
+roomManager.removePlayer = (socketOrId) => {
+  const targetSocket =
+    typeof socketOrId === 'string' ? io.sockets.sockets.get(socketOrId) : socketOrId;
+  if (targetSocket) {
+    roomManager.leaveCurrentRoom(targetSocket);
+  }
+};
+
 // ============================================================================
 // Eventos de Conexão em Tempo Real (Socket.io)
 // ============================================================================
@@ -102,96 +111,97 @@ io.on('connection', (socket) => {
   // 3. Criação de Sala Privada pelo Host
   socket.on('room:create_private', ({ playerProfile, teamSize, friendlyFire } = {}, callback) => {
     const result = roomManager.createPrivateRoom(socket, playerProfile, { teamSize, friendlyFire });
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 4. Atualização de configurações da sala pelo Host
   socket.on('room:update_config', (configData = {}, callback) => {
     const result = roomManager.updateRoomConfig(socket, configData);
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 5. Alternar estado de "Pronto" (exclusivo para jogadores convidados)
   socket.on('room:toggle_ready', (payload = {}, callback) => {
     const result = roomManager.togglePlayerReady(socket, payload);
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 6. Escolha / troca de time por qualquer jogador na sala
   socket.on('room:select_team', (teamData = {}, callback) => {
     const result = roomManager.selectTeam(socket, teamData);
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 7. Entrar ou Solicitar Entrada em Sala (via Lista de Salas, Código, Link ou Convite de Amigo)
   socket.on('room:join_private', ({ roomId, playerProfile, fromInvite } = {}, callback) => {
     const result = roomManager.requestOrJoinRoom(socket, roomId, playerProfile, Boolean(fromInvite));
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 8. Criador da Sala aceita ou recusa solicitação de entrada
   socket.on('room:respond_join', (payload = {}, callback) => {
-    const result = roomManager.respondToJoinRequest(socket, payload);
-    if (callback) callback(result);
+    const result = roomManager.respondJoinRequest(socket, payload);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 9. Criador da Sala expulsa jogador da sala
   socket.on('room:kick_player', (payload = {}, callback) => {
     const result = roomManager.kickPlayer(socket, payload);
-    if (callback) callback(result);
+    if (typeof callback === 'function') callback(result);
   });
 
   // 10. Entrar na fila pública do Battle Royale
-  socket.on('room:join_br', ({ playerProfile } = {}, callback) => {
-    const result = roomManager.joinBattleRoyale(socket, playerProfile);
-    if (callback) callback(result);
-  });
+  const handleJoinBR = (payload = {}, callback) => {
+    const profile = payload && payload.playerProfile ? payload.playerProfile : payload;
+    const result = roomManager.findOrCreateBattleRoyale(socket, profile);
+    if (typeof callback === 'function') callback(result);
+  };
+  socket.on('room:join_battleroyale', handleJoinBR);
+  socket.on('room:join_br', handleJoinBR);
 
   // 11. Iniciar partida manualmente (Exclusivo do Criador quando convidados estão Prontos)
-  socket.on('room:start_match', ({ roomId } = {}, callback) => {
-    const result = roomManager.startMatchByHost(socket, roomId);
-    if (callback) callback(result);
+  const handleStartMatch = (payloadOrCb, maybeCb) => {
+    const callback = typeof payloadOrCb === 'function' ? payloadOrCb : maybeCb;
+    const roomId =
+      payloadOrCb && typeof payloadOrCb === 'object' ? payloadOrCb.roomId : socket.currentRoomId;
+    const result = roomManager.startMatch(socket, roomId);
+    if (typeof callback === 'function') callback(result);
+  };
+  socket.on('room:start', handleStartMatch);
+  socket.on('room:start_match', handleStartMatch);
+
+  // 12. Movimento contínuo e carregamento de empurrão/agarrão na arena
+  socket.on('match:input', (inputData = {}) => {
+    roomManager.handlePlayerInput(socket, inputData);
+  });
+  socket.on('game:move_input', (inputData = {}) => {
+    roomManager.handlePlayerInput(socket, inputData);
   });
 
-  // 12. Movimento contínuo do jogador na arena
-  socket.on('game:move_input', (inputVec) => {
-    roomManager.handleMoveInput(socket.id, inputVec);
+  // 13. Pressionar empurrar para escapar quando levantado ou soltar empurrão
+  socket.on('match:escape_press', (payload = {}) => {
+    roomManager.handlePlayerShoveOrEscape(socket, payload);
   });
-
-  // 13. Início do carregamento do empurrão
-  socket.on('game:charge_start', () => {
-    roomManager.handleChargeStart(socket.id);
-  });
-
-  // 14. Soltar o botão de empurrar
   socket.on('game:shove_release', (payload = {}) => {
-    roomManager.handleShoveRelease(socket.id, payload);
+    roomManager.handlePlayerShoveOrEscape(socket, payload);
   });
 
-  // 15. Segurar / Levantar adversário ou soltar para arremessar
-  socket.on('game:grab_start', () => {
-    roomManager.handleGrabStart(socket.id);
+  // 14. Sair da sala atual e retornar ao lobby
+  socket.on('room:leave', (callback) => {
+    roomManager.leaveCurrentRoom(socket);
+    if (typeof callback === 'function') callback({ success: true });
   });
 
-  socket.on('game:grab_release', () => {
-    roomManager.handleGrabRelease(socket.id);
-  });
-
-  // 16. Sair da sala atual e retornar ao lobby
-  socket.on('room:leave', () => {
-    roomManager.removePlayer(socket.id);
-  });
-
-  // 17. Logout explícito do usuário
+  // 15. Logout explícito do usuário
   socket.on('user:logout', () => {
-    roomManager.removePlayer(socket.id);
-    roomManager.unregisterUserPresence(socket.id);
+    roomManager.leaveCurrentRoom(socket);
+    roomManager.unregisterUserPresence(socket);
   });
 
-  // 18. Desconexão
+  // 16. Desconexão do socket
   socket.on('disconnect', () => {
-    roomManager.removePlayer(socket.id);
-    roomManager.unregisterUserPresence(socket.id);
+    roomManager.leaveCurrentRoom(socket);
+    roomManager.unregisterUserPresence(socket);
     console.log(`[Socket] Desconectado: ${socket.id}`);
   });
 });
