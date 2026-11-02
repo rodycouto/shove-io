@@ -1123,7 +1123,7 @@ class LoginScreenController {
     if (isPrivate) {
       window.history.replaceState({}, '', `/room/${room.id}`);
       if (this.roomShareUrl) {
-        this.roomShareUrl.textContent = `shove.io/room/${room.id}`;
+        this.roomShareUrl.textContent = `https://shove.discloud.dev/room/${room.id}`;
       }
     }
 
