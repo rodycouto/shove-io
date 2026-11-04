@@ -1,42 +1,49 @@
 // server/managers/RoomManager.js
 // ============================================================================
 // Gerenciador Central de Salas, Lista Pública, Aprovação de Entrada, Expulsão,
-// Sistema de Amigos (Presença Online/Offline + Convite para Partida),
-// Múltiplos Rounds, Seleção de Mapas, Apresentação + Contagem 5..1 SHOVE!,
-// Física Autoritativa (30Hz) e Sistema de Níveis / XP Proporcional.
+// Múltiplos Rounds, Seleção de Mapas (incluindo Circo Saltitante com 5 Trampolins),
+// Novo Power-up Luva de Boxe (Nocaute de 2s no chão + Vulnerabilidade),
+// Física Autoritativa (30Hz com volatile.emit + vetores vx/vy/vz para predição)
+// e Nível (level) de cada personagem ao lado do nome.
 // ============================================================================
 
 const fs = require('fs');
 const path = require('path');
+const { performance } = require('perf_hooks');
 const ENV = require('../config/env');
 const authRoutes = require('../routes/authRoutes');
+const { cacheRoomInRedis, deleteRoomFromRedis } = require('../config/redis');
 
+// Catálogo de times utilizando identificadores de ícones do Lucide (sem emojis)
 const TEAMS_CATALOG = [
-  { id: 1, name: 'Time Azul', icon: '🐬', color: '#00E5FF' },
-  { id: 2, name: 'Time Vermelho', icon: '🦊', color: '#FF3366' },
-  { id: 3, name: 'Time Amarelo', icon: '⚡', color: '#FFD600' },
-  { id: 4, name: 'Time Verde', icon: '🦖', color: '#00E676' },
-  { id: 5, name: 'Time Roxo', icon: '🔮', color: '#AA00FF' },
-  { id: 6, name: 'Time Laranja', icon: '🐯', color: '#FF6D00' },
-  { id: 7, name: 'Time Rosa', icon: '🦄', color: '#FF80AB' },
-  { id: 8, name: 'Time Turquesa', icon: '🐢', color: '#1DE9B6' }
+  { id: 1, name: 'Time Azul', icon: 'shield', color: '#00E5FF' },
+  { id: 2, name: 'Time Vermelho', icon: 'flame', color: '#FF3366' },
+  { id: 3, name: 'Time Amarelo', icon: 'zap', color: '#FFD600' },
+  { id: 4, name: 'Time Verde', icon: 'award', color: '#00E676' },
+  { id: 5, name: 'Time Roxo', icon: 'sparkles', color: '#AA00FF' },
+  { id: 6, name: 'Time Laranja', icon: 'swords', color: '#FF6D00' },
+  { id: 7, name: 'Time Rosa', icon: 'star', color: '#FF80AB' },
+  { id: 8, name: 'Time Turquesa', icon: 'trophy', color: '#1DE9B6' }
 ];
 
+// Catálogo dos 5 Power-ups (incluindo o novo BOXING_GLOVE - Luva de Boxe)
 const POWERUP_TYPES = [
-  { type: 'INVISIBLE', name: 'Invisível (5s)', icon: '👻', color: '#00E5FF' },
-  { type: 'MEGA_SHOVE', name: 'Mega Shove (4x)', icon: '💥', color: '#FF3366' },
-  { type: 'HEAVYWEIGHT', name: 'Peso Pesado (5s)', icon: '🛡️', color: '#FFD600' },
-  { type: 'SHOCK', name: 'Arma de Shock (3s)', icon: '⚡', color: '#AA00FF' }
+  { type: 'INVISIBLE', name: 'Invisível (5s)', icon: 'ghost', color: '#00E5FF' },
+  { type: 'MEGA_SHOVE', name: 'Mega Shove (4x)', icon: 'flame', color: '#FF3366' },
+  { type: 'HEAVYWEIGHT', name: 'Peso Pesado (5s)', icon: 'shield', color: '#FFD600' },
+  { type: 'SHOCK', name: 'Arma de Shock (3s)', icon: 'zap', color: '#AA00FF' },
+  { type: 'BOXING_GLOVE', name: 'Luva de Boxe (KO 2s)', icon: 'hand', color: '#FF1744' }
 ];
 
 const BOT_NAMES = [
   'RoboShove', 'Pinguim3D', 'TrovãoAzul', 'MegaFeijão', 'AstroBot',
   'DinoPulo', 'PipocaCósmica', 'BolaDeFogo', 'Gelinho', 'TurboKids',
-  'CapitãoEmpurra', 'ZigueZague', 'Cometa Feliz', 'SuperBumper', 'NinjaFofo'
+  'CapitãoEmpurra', 'ZigueZague', 'CometaFeliz', 'SuperBumper', 'NinjaFofo'
 ];
 
 const BOT_COLORS = ['#FF3366', '#00E5FF', '#FFD600', '#00E676', '#AA00FF', '#FF6D00'];
 
+// Constantes padrão de Gameplay
 const DEFAULT_MATCH_DURATION_SEC = 150;
 const DEFAULT_POWERUP_SPAWN_SEC = 15;
 const DEFAULT_TOTAL_ROUNDS = 3;
@@ -48,16 +55,18 @@ const STUN_ON_ESCAPE_MS = 500;
 const INVISIBLE_DURATION_MS = 5000;
 const HEAVYWEIGHT_DURATION_MS = 5000;
 const SHOCK_DURATION_MS = 3000;
+const BOXING_KO_DURATION_MS = 2000; // 2 segundos deitado no chão vulnerável
 const MAX_NORMAL_SHOVE_FORCE = 26;
+
+// Arredondamento matemático rápido (sem alocar strings com .toFixed(2) no Garbage Collector)
+function round2(val) {
+  return Math.round((Number(val) || 0) * 100) / 100;
+}
 
 class RoomManager {
   constructor(io) {
     this.io = io;
     this.rooms = new Map();
-
-    // Registro em tempo real dos jogadores online para o Sistema de Amigos
-    // socketId -> { socketId, userId, username, lowerName, skinColor, friends: Set<string> }
-    this.onlineUsers = new Map();
 
     this.MAX_PLAYERS = Math.min(15, ENV.MAX_PLAYERS_PER_ROOM || 15);
     this.TICK_RATE = ENV.SERVER_TICK_RATE || 30;
@@ -65,216 +74,8 @@ class RoomManager {
     this.BR_WAIT_TIME_SECONDS = ENV.BR_WAIT_TIME_SECONDS || 60;
 
     this.mapsList = this.loadMapsFromJson();
+    this.publicRoomsBroadcastTimer = null;
   }
-
-  // ==========================================================================
-  // SISTEMA DE AMIGOS (PRESENÇA ONLINE/OFFLINE E CONVITE PARA PARTIDA)
-  // ==========================================================================
-
-  /**
-   * Registra que um usuário está Online no Lobby/Jogo e sincroniza sua lista de amigos.
-   */
-  registerUserPresence(socket, userProfile = {}) {
-    if (!userProfile || !userProfile.username) return;
-
-    const cleanName = String(userProfile.username).trim();
-    const existing = this.onlineUsers.get(socket.id);
-    const initialFriends = Array.isArray(userProfile.friends)
-      ? userProfile.friends
-      : existing
-      ? Array.from(existing.friends)
-      : [];
-
-    this.onlineUsers.set(socket.id, {
-      socketId: socket.id,
-      userId: userProfile.id || `user_${socket.id}`,
-      username: cleanName,
-      lowerName: cleanName.toLowerCase(),
-      skinColor: userProfile.skinColor || '#FF3366',
-      friends: new Set(initialFriends.map((f) => String(f).trim()).filter(Boolean))
-    });
-
-    this.broadcastFriendsPresence();
-  }
-
-  /**
-   * Remove o registro de presença quando o socket desconecta ou faz logout.
-   */
-  unregisterUserPresence(socket) {
-    if (this.onlineUsers.has(socket.id)) {
-      this.onlineUsers.delete(socket.id);
-      this.broadcastFriendsPresence();
-    }
-  }
-
-  /**
-   * Procura um usuário online pelo Nickname (case-insensitive).
-   */
-  findOnlineUserByUsername(username) {
-    if (!username) return null;
-    const targetLower = String(username).trim().toLowerCase();
-    for (const u of this.onlineUsers.values()) {
-      if (u.lowerName === targetLower) {
-        return u;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Monta a lista de amigos de um socket específico informando quem está Online ou Offline.
-   */
-  getFriendsListForSocket(socketId) {
-    const userRecord = this.onlineUsers.get(socketId);
-    if (!userRecord) return [];
-
-    const result = [];
-    for (const friendName of userRecord.friends) {
-      const onlineMatch = this.findOnlineUserByUsername(friendName);
-      const friendSocket = onlineMatch ? this.io.sockets.sockets.get(onlineMatch.socketId) : null;
-      const isOnline = Boolean(onlineMatch && friendSocket && friendSocket.connected);
-
-      result.push({
-        username: onlineMatch ? onlineMatch.username : friendName,
-        skinColor: onlineMatch ? onlineMatch.skinColor : '#9aa5ce',
-        online: isOnline,
-        inRoomId: isOnline ? friendSocket.currentRoomId || null : null
-      });
-    }
-
-    // Ordena mostrando amigos Online no topo da lista
-    return result.sort((a, b) => Number(b.online) - Number(a.online) || a.username.localeCompare(b.username));
-  }
-
-  /**
-   * Atualiza em tempo real o status Online/Offline na tela de todos os usuários conectados.
-   */
-  broadcastFriendsPresence() {
-    for (const [sockId] of this.onlineUsers.entries()) {
-      const sock = this.io.sockets.sockets.get(sockId);
-      if (sock) {
-        sock.emit('friends:list_update', this.getFriendsListForSocket(sockId));
-      }
-    }
-  }
-
-  /**
-   * Adiciona um amigo pelo Nickname, persiste no banco/memória e retorna a lista atualizada.
-   */
-  async addFriend(socket, { friendUsername } = {}) {
-    const cleanFriend = String(friendUsername || '').trim();
-    if (!cleanFriend || cleanFriend.length < 2) {
-      return { error: 'Digite um Nickname válido para adicionar.' };
-    }
-
-    const myRecord = this.onlineUsers.get(socket.id);
-    if (!myRecord) {
-      return { error: 'Faça login antes de adicionar amigos.' };
-    }
-
-    if (cleanFriend.toLowerCase() === myRecord.lowerName) {
-      return { error: 'Você não pode adicionar a si mesmo!' };
-    }
-
-    // Evita duplicatas com capitalização diferente
-    for (const existing of myRecord.friends) {
-      if (existing.toLowerCase() === cleanFriend.toLowerCase()) {
-        return { error: `${cleanFriend} já está na sua lista de amigos!` };
-      }
-    }
-
-    myRecord.friends.add(cleanFriend);
-    const savedArray = await authRoutes.saveUserFriendsList(
-      myRecord.userId,
-      Array.from(myRecord.friends)
-    );
-
-    const friendsList = this.getFriendsListForSocket(socket.id);
-    socket.emit('friends:list_update', friendsList);
-    return { success: true, friends: savedArray, friendsList };
-  }
-
-  /**
-   * Remove um amigo da lista do usuário.
-   */
-  async removeFriend(socket, { friendUsername } = {}) {
-    const targetLower = String(friendUsername || '').trim().toLowerCase();
-    const myRecord = this.onlineUsers.get(socket.id);
-    if (!myRecord) return { error: 'Sessão não encontrada.' };
-
-    for (const f of Array.from(myRecord.friends)) {
-      if (f.toLowerCase() === targetLower) {
-        myRecord.friends.delete(f);
-      }
-    }
-
-    const savedArray = await authRoutes.saveUserFriendsList(
-      myRecord.userId,
-      Array.from(myRecord.friends)
-    );
-
-    const friendsList = this.getFriendsListForSocket(socket.id);
-    socket.emit('friends:list_update', friendsList);
-    return { success: true, friends: savedArray, friendsList };
-  }
-
-  /**
-   * Envia um convite de partida em tempo real para um amigo Online.
-   * Se quem convidou ainda não estiver em uma sala, cria uma sala privada automaticamente!
-   */
-  inviteFriendToMatch(socket, { friendUsername, playerProfile } = {}) {
-    const friendRecord = this.findOnlineUserByUsername(friendUsername);
-    if (!friendRecord) {
-      return { error: `${friendUsername} está Offline no momento.` };
-    }
-
-    const friendSocket = this.io.sockets.sockets.get(friendRecord.socketId);
-    if (!friendSocket || !friendSocket.connected) {
-      return { error: `${friendUsername} está Offline no momento.` };
-    }
-
-    let roomId = socket.currentRoomId;
-    let createdRoomNow = null;
-
-    // Se o jogador que clicou em "Convidar" ainda não estava em uma sala, cria uma sala para ele!
-    if (!roomId || !this.rooms.has(roomId)) {
-      const createRes = this.createPrivateRoom(socket, playerProfile || {
-        id: this.onlineUsers.get(socket.id)?.userId,
-        username: this.onlineUsers.get(socket.id)?.username || 'Jogador',
-        skinColor: this.onlineUsers.get(socket.id)?.skinColor || '#FF3366'
-      });
-      roomId = createRes.room.id;
-      createdRoomNow = createRes.room;
-    }
-
-    const room = this.rooms.get(roomId);
-    if (!room || room.status !== 'WAITING') {
-      return { error: 'A partida na sua sala já começou!' };
-    }
-
-    // Registra o amigo na lista de convidados autorizados da sala para entrar direto ao aceitar
-    if (!room.invitedSockets) room.invitedSockets = new Set();
-    room.invitedSockets.add(friendSocket.id);
-
-    const senderName = this.onlineUsers.get(socket.id)?.username || playerProfile?.username || 'Amigo';
-
-    friendSocket.emit('friends:receive_invite', {
-      roomId: room.id,
-      fromUsername: senderName,
-      teamSize: room.teamSize,
-      totalRounds: room.totalRounds
-    });
-
-    return {
-      success: true,
-      room: createdRoomNow,
-      message: `Convite enviado para ${friendRecord.username}!`
-    };
-  }
-
-  // ==========================================================================
-  // MAPAS, SALAS, LISTA PÚBLICA E CONTROLE DE ACESSO
-  // ==========================================================================
 
   loadMapsFromJson() {
     try {
@@ -306,17 +107,18 @@ class RoomManager {
           innerHoleRadius: 0,
           shrinkRate: 0,
           minRadius: 12.0,
-          pillars: []
+          pillars: [],
+          trampolines: []
         }
       }
     ];
   }
 
   pickMapForRound(room) {
-    this.mapsList = this.loadMapsFromJson();
-    const allowedIds = Array.isArray(room?.selectedMapIds) && room.selectedMapIds.length > 0
-      ? room.selectedMapIds
-      : this.mapsList.map((m) => m.id);
+    const allowedIds =
+      Array.isArray(room?.selectedMapIds) && room.selectedMapIds.length > 0
+        ? room.selectedMapIds
+        : this.mapsList.map((m) => m.id);
 
     let pool = this.mapsList.filter((m) => allowedIds.includes(m.id));
     if (pool.length === 0) {
@@ -334,7 +136,9 @@ class RoomManager {
     if (room) {
       room.lastPlayedMapId = chosen.id;
     }
-    return JSON.parse(JSON.stringify(chosen));
+    return typeof structuredClone === 'function'
+      ? structuredClone(chosen)
+      : JSON.parse(JSON.stringify(chosen));
   }
 
   generateRoomCode() {
@@ -444,7 +248,10 @@ class RoomManager {
     const targetBots = Math.max(0, Math.min(maxAllowedBots, Number(room.botCount) || 0));
     room.botCount = targetBots;
 
-    const usedNames = new Set(Array.from(room.players.values()).map((p) => p.username));
+    const usedNames = new Set();
+    for (const p of room.players.values()) {
+      usedNames.add(p.username);
+    }
 
     for (let i = 0; i < targetBots; i++) {
       const botId = `bot_cfg_${Date.now()}_${i}`;
@@ -460,8 +267,10 @@ class RoomManager {
       room.players.set(botId, {
         socketId: botId,
         userId: botId,
-        username: `🤖 ${botName}`,
+        username: botName,
         skinColor,
+        level: 1,
+        stats: { level: 1, xp: 0, wins: 0, matches: 0, shoves: 0, kills: 0 },
         teamId,
         isBot: true,
         isReady: true,
@@ -493,6 +302,7 @@ class RoomManager {
       totalRounds: DEFAULT_TOTAL_ROUNDS,
       currentRound: 1,
       selectedMapIds: [...allMapIds],
+      selectedPowerupIds: POWERUP_TYPES.map((p) => p.type),
       lastPlayedMapId: null,
       playerSpeedMultiplier: 1.0,
       powerupsEnabled: true,
@@ -506,8 +316,8 @@ class RoomManager {
       selectedMap: this.mapsList[0],
       players: new Map(),
       joinRequests: new Map(),
-      invitedSockets: new Set(),
       powerups: new Map(),
+      chatHistory: [],
       matchLoop: null,
       countdownTimer: null,
       introTimeout: null,
@@ -520,7 +330,6 @@ class RoomManager {
     this.syncConfiguredBots(room);
     this.broadcastRoomState(roomId);
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
     return { room: this.serializeRoom(room) };
   }
 
@@ -532,6 +341,7 @@ class RoomManager {
         list.push({
           id: room.id,
           hostName: hostPlayer ? hostPlayer.username : room.hostName || 'Líder',
+          hostLevel: hostPlayer ? hostPlayer.level || 1 : 1,
           playersCount: room.players.size,
           realPlayersCount: this.countRealPlayers(room),
           maxPlayers: room.maxPlayers,
@@ -545,7 +355,11 @@ class RoomManager {
   }
 
   broadcastPublicRoomsList() {
-    this.io.emit('rooms:list', this.getPublicRoomsList());
+    if (this.publicRoomsBroadcastTimer) return;
+    this.publicRoomsBroadcastTimer = setTimeout(() => {
+      this.publicRoomsBroadcastTimer = null;
+      this.io.to('lobby').emit('rooms:list', this.getPublicRoomsList());
+    }, 80);
   }
 
   updateRoomConfig(socket, configData = {}) {
@@ -592,10 +406,15 @@ class RoomManager {
 
     if (Array.isArray(configData.selectedMapIds)) {
       const validIds = this.mapsList.map((m) => m.id);
-      const filtered = configData.selectedMapIds.filter((id) => validIds.includes(id));
-      if (filtered.length >= 1) {
-        room.selectedMapIds = filtered;
-      }
+      room.selectedMapIds = configData.selectedMapIds.filter((id) => validIds.includes(id));
+    }
+
+    if (Array.isArray(configData.selectedPowerupIds)) {
+      const validPowerupIds = POWERUP_TYPES.map((p) => p.type);
+      room.selectedPowerupIds = configData.selectedPowerupIds.filter((id) =>
+        validPowerupIds.includes(id)
+      );
+      room.powerupsEnabled = room.selectedPowerupIds.length > 0;
     }
 
     if (configData.playerSpeedMultiplier !== undefined) {
@@ -605,8 +424,16 @@ class RoomManager {
       }
     }
 
-    if (configData.powerupsEnabled !== undefined) {
+    if (configData.powerupsEnabled !== undefined && !Array.isArray(configData.selectedPowerupIds)) {
       room.powerupsEnabled = Boolean(configData.powerupsEnabled);
+      if (
+        room.powerupsEnabled &&
+        (!Array.isArray(room.selectedPowerupIds) || room.selectedPowerupIds.length === 0)
+      ) {
+        room.selectedPowerupIds = POWERUP_TYPES.map((p) => p.type);
+      } else if (!room.powerupsEnabled) {
+        room.selectedPowerupIds = [];
+      }
     }
 
     if (configData.powerupSpawnInterval !== undefined) {
@@ -656,6 +483,7 @@ class RoomManager {
     const targetSocket = this.io.sockets.sockets.get(targetSocketId);
     if (targetSocket) {
       targetSocket.leave(cleanId);
+      targetSocket.join('lobby');
       targetSocket.currentRoomId = null;
       targetSocket.emit('room:kicked', {
         roomId: cleanId,
@@ -665,11 +493,10 @@ class RoomManager {
 
     this.broadcastRoomState(cleanId);
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
     return { room: this.serializeRoom(room) };
   }
 
-  requestOrJoinRoom(socket, roomId, playerProfile, forceDirectFromInvite = false) {
+  requestOrJoinRoom(socket, roomId, playerProfile) {
     if (!roomId || typeof roomId !== 'string') {
       return { error: 'Informe um código de sala válido.' };
     }
@@ -688,12 +515,7 @@ class RoomManager {
       return { room: this.serializeRoom(room) };
     }
 
-    // Se o jogador veio de um Convite de Amigo (ou se a sala está livre / foi convidado), permite trocar/entrar direto!
-    const wasInvited = Boolean(
-      forceDirectFromInvite || (room.invitedSockets && room.invitedSockets.has(socket.id))
-    );
-
-    if (socket.currentRoomId && socket.currentRoomId !== cleanId && !wasInvited) {
+    if (socket.currentRoomId && socket.currentRoomId !== cleanId) {
       return { error: 'Você já está em uma sala! Saia da sala atual antes de entrar em outra.' };
     }
 
@@ -702,17 +524,18 @@ class RoomManager {
       return { error: `Esta sala já atingiu o limite máximo de ${room.maxPlayers} usuários!` };
     }
 
-    if (room.isOpenJoin || room.hostId === socket.id || wasInvited) {
-      if (room.invitedSockets) room.invitedSockets.delete(socket.id);
+    if (room.isOpenJoin || room.hostId === socket.id) {
       return this.addPlayerDirectlyToRoom(socket, room, playerProfile);
     }
 
     const safeProfile = playerProfile || {};
+    const normStats = authRoutes.normalizeStats(safeProfile.stats || {});
     room.joinRequests.set(socket.id, {
       socketId: socket.id,
       userId: safeProfile.id || `user_${socket.id}`,
       username: (safeProfile.username || 'Jogador').substring(0, 15),
       skinColor: safeProfile.skinColor || '#00E5FF',
+      level: normStats.level,
       playerProfile: safeProfile,
       requestedAt: Date.now()
     });
@@ -793,6 +616,7 @@ class RoomManager {
     this.ensureSingleRoomPerUser(socket, playerProfile?.id);
 
     const safeProfile = playerProfile || {};
+    const normStats = authRoutes.normalizeStats(safeProfile.stats || {});
     const teamId = room.teamSize > 1 ? this.findAvailableTeamId(room) : null;
     const isHostPlayer = room.hostId === socket.id;
 
@@ -801,7 +625,8 @@ class RoomManager {
       userId: safeProfile.id || `user_${socket.id}`,
       username: (safeProfile.username || 'Jogador').substring(0, 15),
       skinColor: safeProfile.skinColor || '#FF3366',
-      stats: authRoutes.normalizeStats(safeProfile.stats || {}),
+      level: normStats.level,
+      stats: normStats,
       teamId,
       isBot: false,
       isReady: isHostPlayer,
@@ -818,7 +643,6 @@ class RoomManager {
 
     this.broadcastRoomState(cleanId);
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
     return { room: this.serializeRoom(room) };
   }
 
@@ -931,8 +755,8 @@ class RoomManager {
         selectedMap: this.mapsList[0],
         players: new Map(),
         joinRequests: new Map(),
-        invitedSockets: new Set(),
         powerups: new Map(),
+        chatHistory: [],
         matchLoop: null,
         countdownTimer: null,
         introTimeout: null,
@@ -1014,6 +838,7 @@ class RoomManager {
         const clientSocket = this.io.sockets.sockets.get(p.socketId);
         if (clientSocket) {
           clientSocket.leave(room.id);
+          clientSocket.join('lobby');
           clientSocket.currentRoomId = null;
         }
       }
@@ -1021,15 +846,18 @@ class RoomManager {
 
     this.clearRoomTimers(room);
     this.rooms.delete(room.id);
+    deleteRoomFromRedis(room.id);
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
   }
 
   fillRoomWithBots(room) {
     const slotsAvailable = this.MAX_PLAYERS - room.players.size;
     if (slotsAvailable <= 0) return;
 
-    const usedNames = new Set(Array.from(room.players.values()).map((p) => p.username));
+    const usedNames = new Set();
+    for (const p of room.players.values()) {
+      usedNames.add(p.username);
+    }
 
     for (let i = 0; i < slotsAvailable; i++) {
       const botId = `bot_${Date.now()}_${i}`;
@@ -1045,8 +873,10 @@ class RoomManager {
       room.players.set(botId, {
         socketId: botId,
         userId: botId,
-        username: `🤖 ${botName}`,
+        username: botName,
         skinColor,
+        level: 1,
+        stats: { level: 1, xp: 0, wins: 0, matches: 0, shoves: 0, kills: 0 },
         teamId,
         isBot: true,
         isReady: true,
@@ -1067,7 +897,10 @@ class RoomManager {
     }
 
     const roomId = socket.currentRoomId;
-    if (!roomId || !this.rooms.has(roomId)) return;
+    if (!roomId || !this.rooms.has(roomId)) {
+      socket.join('lobby');
+      return;
+    }
 
     const room = this.rooms.get(roomId);
     const leavingPlayer = room.players.get(socket.id);
@@ -1077,6 +910,7 @@ class RoomManager {
 
     room.players.delete(socket.id);
     socket.leave(roomId);
+    socket.join('lobby');
     socket.currentRoomId = null;
 
     const remainingRealPlayers = this.countRealPlayers(room);
@@ -1084,6 +918,7 @@ class RoomManager {
     if (remainingRealPlayers === 0) {
       this.clearRoomTimers(room);
       this.rooms.delete(roomId);
+      deleteRoomFromRedis(roomId);
     } else {
       if (room.mode === 'PRIVATE' && room.hostId === socket.id) {
         for (const p of room.players.values()) {
@@ -1098,7 +933,6 @@ class RoomManager {
       this.broadcastRoomState(roomId);
     }
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
   }
 
   startMatch(socket, roomId) {
@@ -1128,15 +962,14 @@ class RoomManager {
     return { success: true };
   }
 
-  // ==========================================================================
-  // LÓGICA DE MÚLTIPLOS ROUNDS, APRESENTAÇÃO DO MAPA E CONTAGEM 5..1 SHOVE!
-  // ==========================================================================
-
   launchMatch(room) {
     this.clearRoomTimers(room);
     room.status = 'PLAYING';
     room.currentRound = 1;
-    room.totalRounds = Math.max(1, Math.min(MAX_TOTAL_ROUNDS, Number(room.totalRounds) || DEFAULT_TOTAL_ROUNDS));
+    room.totalRounds = Math.max(
+      1,
+      Math.min(MAX_TOTAL_ROUNDS, Number(room.totalRounds) || DEFAULT_TOTAL_ROUNDS)
+    );
     room.lastPlayedMapId = null;
     room.teamRoundWins = new Map();
 
@@ -1144,6 +977,10 @@ class RoomManager {
       p.roundWins = 0;
       p.totalKills = 0;
       p.totalShoves = 0;
+      if (!p.isBot) {
+        const s = this.io.sockets.sockets.get(p.socketId);
+        if (s) s.leave('lobby');
+      }
     }
 
     this.broadcastPublicRoomsList();
@@ -1168,9 +1005,10 @@ class RoomManager {
     room.roundPhase = 'MAP_INTRO';
     room.combatLocked = true;
 
-    const spawnRadius = mapPhysics.innerHoleRadius > 0
-      ? (mapPhysics.innerHoleRadius + mapPhysics.radius) * 0.52
-      : mapPhysics.radius * 0.62;
+    const spawnRadius =
+      mapPhysics.innerHoleRadius > 0
+        ? (mapPhysics.innerHoleRadius + mapPhysics.radius) * 0.52
+        : mapPhysics.radius * 0.62;
 
     let idx = 0;
     for (const p of room.players.values()) {
@@ -1197,8 +1035,11 @@ class RoomManager {
       p.invisibleUntil = 0;
       p.heavyUntil = 0;
       p.shockedUntil = 0;
+      p.knockedOutUntil = 0;
       p.hasMegaShove = false;
       p.hasShockWeapon = false;
+      p.hasBoxingGlove = false;
+      p.lastTrampolineJumpAt = 0;
 
       p.alive = true;
       p.kills = 0;
@@ -1230,10 +1071,13 @@ class RoomManager {
       durationMs: MAP_INTRO_DURATION_MS
     });
 
-    const dt = 1 / this.TICK_RATE;
+    let lastTickPerf = performance.now();
     room.matchLoop = setInterval(() => {
-      this.updateMatchPhysics(room, dt);
-    }, 1000 / this.TICK_RATE);
+      const nowPerf = performance.now();
+      const realDt = Math.min(0.1, Math.max(0.005, (nowPerf - lastTickPerf) / 1000));
+      lastTickPerf = nowPerf;
+      this.updateMatchPhysics(room, realDt);
+    }, Math.round(1000 / this.TICK_RATE));
 
     room.introTimeout = setTimeout(() => {
       if (!this.rooms.has(room.id) || room.status !== 'PLAYING') return;
@@ -1311,7 +1155,8 @@ class RoomManager {
     if (!player || !player.alive) return;
 
     const now = Date.now();
-    const isIncapacitated = now < player.stunnedUntil || now < player.shockedUntil;
+    const isIncapacitated =
+      now < player.stunnedUntil || now < player.shockedUntil || now < player.knockedOutUntil;
 
     if (player.grabbedById || isIncapacitated) {
       player.inputX = 0;
@@ -1321,8 +1166,9 @@ class RoomManager {
 
     let mx = Number(inputData?.moveX) || 0;
     let mz = Number(inputData?.moveZ) || 0;
-    const len = Math.hypot(mx, mz);
-    if (len > 1) {
+    const lenSq = mx * mx + mz * mz;
+    if (lenSq > 1) {
+      const len = Math.sqrt(lenSq);
       mx /= len;
       mz /= len;
     }
@@ -1369,7 +1215,9 @@ class RoomManager {
     if (!player || !player.alive) return;
 
     const now = Date.now();
-    if (now < player.shockedUntil || now < player.stunnedUntil) return;
+    if (now < player.shockedUntil || now < player.stunnedUntil || now < player.knockedOutUntil) {
+      return;
+    }
 
     if (player.grabbedById) {
       this.registerEscapePress(room, player);
@@ -1429,15 +1277,21 @@ class RoomManager {
     if (!attacker || !attacker.alive || attacker.grabbedById || attacker.grabbedTargetId) return;
 
     const now = Date.now();
-    if (now < attacker.stunnedUntil || now < attacker.shockedUntil) return;
+    if (
+      now < attacker.stunnedUntil ||
+      now < attacker.shockedUntil ||
+      now < attacker.knockedOutUntil
+    ) {
+      return;
+    }
 
     if (attacker.invisibleUntil > now) {
       attacker.invisibleUntil = 0;
     }
 
-    const GRAB_RANGE = 2.35;
+    const GRAB_RANGE_SQ = 2.35 * 2.35;
     let nearestTarget = null;
-    let minDist = Infinity;
+    let minDistSq = Infinity;
 
     for (const target of room.players.values()) {
       if (target.socketId === attacker.socketId || !target.alive) continue;
@@ -1446,9 +1300,11 @@ class RoomManager {
       if (target.invisibleUntil > now) continue;
       if (target.heavyUntil > now) continue;
 
-      const dist = Math.hypot(target.x - attacker.x, target.z - attacker.z);
-      if (dist <= GRAB_RANGE && dist < minDist) {
-        minDist = dist;
+      const dx = target.x - attacker.x;
+      const dz = target.z - attacker.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq <= GRAB_RANGE_SQ && distSq < minDistSq) {
+        minDistSq = distSq;
         nearestTarget = target;
       }
     }
@@ -1492,7 +1348,10 @@ class RoomManager {
     const dirX = Math.sin(attacker.rotationY);
     const dirZ = Math.cos(attacker.rotationY);
 
-    const vulnMult = Date.now() < target.shockedUntil ? 1.35 : 1.0;
+    const now = Date.now();
+    // Alvo eletrocutado ou nocauteado pela Luva de Boxe fica mais vulnerável!
+    const vulnMult =
+      now < target.knockedOutUntil ? 1.45 : now < target.shockedUntil ? 1.35 : 1.0;
     const throwForce = (15 + power * 27) * vulnMult;
 
     target.x = attacker.x + dirX * 1.1;
@@ -1500,10 +1359,11 @@ class RoomManager {
     target.y = Math.max(0.5, attacker.y + 1.4);
     target.vx = dirX * throwForce;
     target.vz = dirZ * throwForce;
-    target.vy = 5.0 + power * 4.5;
+    const isLowGravThrow = Boolean(room.selectedMap?.physics?.lowGravity);
+    target.vy = (5.0 + power * 4.5) * (isLowGravThrow ? 1.4 : 1.0);
 
     target.lastShovedBy = attacker.socketId;
-    target.lastShovedAt = Date.now();
+    target.lastShovedAt = now;
     attacker.shovesCount = (attacker.shovesCount || 0) + 1;
     attacker.totalShoves = (attacker.totalShoves || 0) + 1;
 
@@ -1522,12 +1382,79 @@ class RoomManager {
     return p1.teamId !== null && p1.teamId === p2.teamId;
   }
 
+  /**
+   * Dispara o soco da Luva de Boxe: nocauteia o oponente deixando-o deitado no
+   * chão por 2 segundos (BOXING_KO_DURATION_MS = 2000) e vulnerável aos inimigos!
+   */
+  fireBoxingGlove(room, attacker, now) {
+    const PUNCH_RANGE_SQ = 3.25 * 3.25;
+    let bestTarget = null;
+    let minDistSq = Infinity;
+
+    for (const target of room.players.values()) {
+      if (target.socketId === attacker.socketId || !target.alive) continue;
+      if (this.isProtectedTeammate(room, attacker, target)) continue;
+      if (target.invisibleUntil > now) continue;
+
+      const dx = target.x - attacker.x;
+      const dz = target.z - attacker.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq <= PUNCH_RANGE_SQ && distSq < minDistSq) {
+        minDistSq = distSq;
+        bestTarget = target;
+      }
+    }
+
+    if (!bestTarget) return false;
+
+    const dx = bestTarget.x - attacker.x;
+    const dz = bestTarget.z - attacker.z;
+    const dist = Math.sqrt(minDistSq) || 1;
+    const nx = dx / dist;
+    const nz = dz / dist;
+
+    this.releaseAnyGrabLinks(room, bestTarget);
+    bestTarget.charging = false;
+    bestTarget.chargePower = 0;
+    bestTarget.grabCharging = false;
+    bestTarget.grabChargePower = 0;
+    bestTarget.knockedOutUntil = now + BOXING_KO_DURATION_MS;
+
+    // Impacto curto que derruba o oponente no chão
+    bestTarget.vx = nx * 8.5;
+    bestTarget.vz = nz * 8.5;
+    bestTarget.vy = 2.2;
+    bestTarget.lastShovedBy = attacker.socketId;
+    bestTarget.lastShovedAt = now;
+
+    attacker.shovesCount = (attacker.shovesCount || 0) + 1;
+    attacker.totalShoves = (attacker.totalShoves || 0) + 1;
+
+    this.io.to(room.id).emit('match:knockout_fx', {
+      attackerId: attacker.socketId,
+      attackerName: attacker.username,
+      targetId: bestTarget.socketId,
+      targetName: bestTarget.username,
+      x: bestTarget.x,
+      z: bestTarget.z,
+      durationMs: BOXING_KO_DURATION_MS
+    });
+
+    return true;
+  }
+
   executeShove(room, attacker, normalizedPower = 0.6) {
     if (room.combatLocked) return;
     if (!attacker || !attacker.alive || attacker.grabbedById) return;
 
     const now = Date.now();
-    if (now < attacker.stunnedUntil || now < attacker.shockedUntil) return;
+    if (
+      now < attacker.stunnedUntil ||
+      now < attacker.shockedUntil ||
+      now < attacker.knockedOutUntil
+    ) {
+      return;
+    }
 
     if (attacker.grabbedTargetId) {
       this.throwGrabbedTarget(room, attacker);
@@ -1538,6 +1465,16 @@ class RoomManager {
       attacker.invisibleUntil = 0;
     }
 
+    // Prioridade 1: Luva de Boxe (soco nocauteador de 2s no chão)
+    if (attacker.hasBoxingGlove) {
+      const knockedSomeone = this.fireBoxingGlove(room, attacker, now);
+      if (knockedSomeone) {
+        attacker.hasBoxingGlove = false;
+        return;
+      }
+    }
+
+    // Prioridade 2: Arma de Shock
     if (attacker.hasShockWeapon) {
       const shockedSomeone = this.fireShockWeapon(room, attacker, now);
       if (shockedSomeone) {
@@ -1548,6 +1485,7 @@ class RoomManager {
 
     const isMega = Boolean(attacker.hasMegaShove);
     const SHOVE_RANGE = isMega ? 3.4 : 2.75;
+    const SHOVE_RANGE_SQ = SHOVE_RANGE * SHOVE_RANGE;
 
     const baseForce = isMega
       ? MAX_NORMAL_SHOVE_FORCE * 4.0
@@ -1571,13 +1509,16 @@ class RoomManager {
 
       const dx = target.x - attacker.x;
       const dz = target.z - attacker.z;
-      const dist = Math.hypot(dx, dz);
+      const distSq = dx * dx + dz * dz;
 
-      if (dist <= SHOVE_RANGE && dist > 0.001) {
+      if (distSq <= SHOVE_RANGE_SQ && distSq > 0.000001) {
+        const dist = Math.sqrt(distSq);
         const nx = dx / dist;
         const nz = dz / dist;
 
-        const vulnMult = now < target.shockedUntil ? 1.35 : 1.0;
+        // Oponente deitado no chão (nocauteado pela Luva de Boxe) fica 45% mais vulnerável!
+        const vulnMult =
+          now < target.knockedOutUntil ? 1.45 : now < target.shockedUntil ? 1.35 : 1.0;
 
         if (target.grabbedTargetId) {
           this.releaseAnyGrabLinks(room, target);
@@ -1585,7 +1526,9 @@ class RoomManager {
 
         target.vx += nx * baseForce * vulnMult;
         target.vz += nz * baseForce * vulnMult;
-        target.vy = isMega ? 9.5 : 4.4 + normalizedPower * 2.6;
+        const isLowGrav = Boolean(room.selectedMap?.physics?.lowGravity);
+        const baseVy = isMega ? 9.5 : 4.4 + normalizedPower * 2.6;
+        target.vy = isLowGrav ? baseVy * 1.45 : baseVy;
 
         target.lastShovedBy = attacker.socketId;
         target.lastShovedAt = now;
@@ -1606,18 +1549,20 @@ class RoomManager {
   }
 
   fireShockWeapon(room, attacker, now) {
-    const SHOCK_RANGE = 5.2;
+    const SHOCK_RANGE_SQ = 5.2 * 5.2;
     let bestTarget = null;
-    let minDist = Infinity;
+    let minDistSq = Infinity;
 
     for (const target of room.players.values()) {
       if (target.socketId === attacker.socketId || !target.alive) continue;
       if (this.isProtectedTeammate(room, attacker, target)) continue;
       if (target.invisibleUntil > now) continue;
 
-      const dist = Math.hypot(target.x - attacker.x, target.z - attacker.z);
-      if (dist <= SHOCK_RANGE && dist < minDist) {
-        minDist = dist;
+      const dx = target.x - attacker.x;
+      const dz = target.z - attacker.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq <= SHOCK_RANGE_SQ && distSq < minDistSq) {
+        minDistSq = distSq;
         bestTarget = target;
       }
     }
@@ -1646,7 +1591,7 @@ class RoomManager {
 
   spawnRandomPowerup(room) {
     const mapPhysics = room.selectedMap.physics;
-    const minR = mapPhysics.innerHoleRadius > 0 ? mapPhysics.innerHoleRadius + 1.4 : 1.2;
+    const minR = mapPhysics.innerHoleRadius > 0 ? mapPhysics.innerHoleRadius + 1.4 : 1.8;
     const maxR = Math.max(minR + 0.5, room.currentArenaRadius - 1.8);
 
     const angle = Math.random() * Math.PI * 2;
@@ -1656,14 +1601,22 @@ class RoomManager {
 
     if (Array.isArray(mapPhysics.pillars)) {
       for (const pil of mapPhysics.pillars) {
-        if (Math.hypot(x - pil.x, z - pil.z) < pil.radius + 1.2) {
+        const dx = x - pil.x;
+        const dz = z - pil.z;
+        const safeR = pil.radius + 1.2;
+        if (dx * dx + dz * dz < safeR * safeR) {
           x = 0;
           z = 0;
         }
       }
     }
 
-    const template = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+    const allowedPowerups = Array.isArray(room.selectedPowerupIds)
+      ? POWERUP_TYPES.filter((p) => room.selectedPowerupIds.includes(p.type))
+      : POWERUP_TYPES;
+    if (allowedPowerups.length === 0) return;
+
+    const template = allowedPowerups[Math.floor(Math.random() * allowedPowerups.length)];
     const id = `pwr_${room.nextPowerupId++}`;
 
     const powerup = {
@@ -1672,9 +1625,9 @@ class RoomManager {
       name: template.name,
       icon: template.icon,
       color: template.color,
-      x: Number(x.toFixed(2)),
+      x: round2(x),
       y: 9.0,
-      z: Number(z.toFixed(2))
+      z: round2(z)
     };
 
     room.powerups.set(id, powerup);
@@ -1697,6 +1650,9 @@ class RoomManager {
       case 'SHOCK':
         player.hasShockWeapon = true;
         break;
+      case 'BOXING_GLOVE':
+        player.hasBoxingGlove = true;
+        break;
       default:
         break;
     }
@@ -1717,7 +1673,11 @@ class RoomManager {
     const now = Date.now();
     const mapPhysics = room.selectedMap.physics;
     const playersArr = Array.from(room.players.values());
-    const alivePlayers = playersArr.filter((p) => p.alive);
+
+    let aliveCount = 0;
+    for (let i = 0; i < playersArr.length; i++) {
+      if (playersArr[i].alive) aliveCount++;
+    }
 
     const totalMatchDur = Math.max(30, Number(room.matchDuration) || DEFAULT_MATCH_DURATION_SEC);
 
@@ -1725,7 +1685,7 @@ class RoomManager {
       const elapsedSec = Math.max(0, (now - room.matchStartTime) / 1000);
       room.matchTimeRemaining = Math.max(0, totalMatchDur - elapsedSec);
 
-      const fallenPlayers = Math.max(0, (room.initialPlayerCount || playersArr.length) - alivePlayers.length);
+      const fallenPlayers = Math.max(0, (room.initialPlayerCount || playersArr.length) - aliveCount);
       const totalPossibleFallen = Math.max(1, (room.initialPlayerCount || playersArr.length) - 1);
       const fallenRatio = Math.min(1, fallenPlayers / totalPossibleFallen);
       const timeProgress = Math.min(1, elapsedSec / totalMatchDur);
@@ -1740,24 +1700,30 @@ class RoomManager {
         );
       }
 
-      if (room.powerupsEnabled !== false) {
+      if (room.powerupsEnabled !== false && (!Array.isArray(room.selectedPowerupIds) || room.selectedPowerupIds.length > 0)) {
         room.powerupTimerSec -= dt;
         if (room.powerupTimerSec <= 0) {
-          room.powerupTimerSec = Math.max(5, Number(room.powerupSpawnInterval) || DEFAULT_POWERUP_SPAWN_SEC);
+          room.powerupTimerSec = Math.max(
+            5,
+            Number(room.powerupSpawnInterval) || DEFAULT_POWERUP_SPAWN_SEC
+          );
           if (room.powerups.size < 4) {
             this.spawnRandomPowerup(room);
           }
         }
 
+        const PICKUP_RADIUS_SQ = 1.35 * 1.35;
         for (const [pwrId, pwr] of room.powerups.entries()) {
           if (pwr.y > 0.65) {
-            pwr.y = Math.max(0.65, pwr.y - 12.0 * dt);
+            pwr.y = Math.max(0.65, round2(pwr.y - 12.0 * dt));
           }
           if (pwr.y <= 1.5) {
-            for (const p of alivePlayers) {
-              if (p.grabbedById || p.y < -0.2) continue;
-              const d = Math.hypot(p.x - pwr.x, p.z - pwr.z);
-              if (d < 1.35) {
+            for (let i = 0; i < playersArr.length; i++) {
+              const p = playersArr[i];
+              if (!p.alive || p.grabbedById || p.y < -0.2) continue;
+              const dx = p.x - pwr.x;
+              const dz = p.z - pwr.z;
+              if (dx * dx + dz * dz < PICKUP_RADIUS_SQ) {
                 this.applyPowerupToPlayer(room, p, pwr);
                 room.powerups.delete(pwrId);
                 break;
@@ -1768,12 +1734,25 @@ class RoomManager {
       }
     }
 
-    for (const p of playersArr) {
+    const innerHoleBoundary =
+      mapPhysics.innerHoleRadius > 0 ? Math.max(0, mapPhysics.innerHoleRadius - 0.35) : 0;
+    const innerHoleBoundarySq = innerHoleBoundary * innerHoleBoundary;
+    const outerBoundary = room.currentArenaRadius + 0.35;
+    const outerBoundarySq = outerBoundary * outerBoundary;
+
+    for (let i = 0; i < playersArr.length; i++) {
+      const p = playersArr[i];
       if (!p.alive) continue;
 
       if (p.grabbedById) {
         const captor = room.players.get(p.grabbedById);
-        if (!captor || !captor.alive || now < captor.stunnedUntil || now < captor.shockedUntil) {
+        if (
+          !captor ||
+          !captor.alive ||
+          now < captor.stunnedUntil ||
+          now < captor.shockedUntil ||
+          now < captor.knockedOutUntil
+        ) {
           this.releaseAnyGrabLinks(room, p);
         } else {
           p.x = captor.x + Math.sin(captor.rotationY) * 0.35;
@@ -1781,7 +1760,7 @@ class RoomManager {
           p.y = captor.y + 2.15;
           p.rotationY = captor.rotationY;
 
-          if (p.isBot && now >= p.shockedUntil && !room.combatLocked) {
+          if (p.isBot && now >= p.shockedUntil && now >= p.knockedOutUntil && !room.combatLocked) {
             p.botEscapeTimer = (p.botEscapeTimer || 0) + dt;
             if (p.botEscapeTimer >= 0.28) {
               p.botEscapeTimer = 0;
@@ -1803,7 +1782,8 @@ class RoomManager {
         }
       }
 
-      const isIncapacitated = now < p.stunnedUntil || now < p.shockedUntil;
+      const isIncapacitated =
+        now < p.stunnedUntil || now < p.shockedUntil || now < p.knockedOutUntil;
       if (isIncapacitated) {
         p.inputX = 0;
         p.inputZ = 0;
@@ -1819,52 +1799,106 @@ class RoomManager {
         p.grabChargePower = Math.min(1.0, p.grabChargePower + dt * 0.75);
       }
 
-      const distFromCenter = Math.hypot(p.x, p.z);
+      const distFromCenterSq = p.x * p.x + p.z * p.z;
       const fellInCenterHole =
-        mapPhysics.innerHoleRadius > 0 && distFromCenter < mapPhysics.innerHoleRadius - 0.35;
-      const fellOutside = distFromCenter > room.currentArenaRadius + 0.35;
+        mapPhysics.innerHoleRadius > 0 && distFromCenterSq < innerHoleBoundarySq;
+      const fellOutside = distFromCenterSq > outerBoundarySq;
 
       const onPlatform = p.y >= -0.2 && !fellInCenterHole && !fellOutside;
 
       if (onPlatform) {
         const actionSlowdown = p.charging || p.grabbedTargetId ? 0.75 : 1.0;
+        const airControlMult = p.y > 0.35 ? 1.15 : 1.0;
         const baseSpeed = mapPhysics.moveSpeed || 18.5;
-        const accel = baseSpeed * room.speedMultiplier * actionSlowdown;
+        const accel = baseSpeed * room.speedMultiplier * actionSlowdown * airControlMult;
 
         p.vx += p.inputX * accel * dt;
         p.vz += p.inputZ * accel * dt;
 
-        if (Math.hypot(p.inputX, p.inputZ) > 0.08 && !isIncapacitated) {
+        if (p.inputX * p.inputX + p.inputZ * p.inputZ > 0.0064 && !isIncapacitated) {
           p.rotationY = Math.atan2(p.inputX, p.inputZ);
         }
 
+        const mapGravity = Number(mapPhysics.gravity) || 21;
+        // Mapa Lua Cintilante (lowGravity): saltos lunares mais altos ao se locomover na superfície
+        if (
+          mapPhysics.lowGravity &&
+          p.y <= 0.04 &&
+          p.vy <= 0.1 &&
+          !isIncapacitated &&
+          !room.combatLocked &&
+          p.inputX * p.inputX + p.inputZ * p.inputZ > 0.04
+        ) {
+          p.vy = Number(mapPhysics.jumpForce) || 10.6;
+          p.y = 0.06;
+        }
+
         if (p.y > 0 || p.vy > 0) {
-          p.vy -= 18 * dt;
+          p.vy -= mapGravity * dt;
           p.y += p.vy * dt;
           if (p.y < 0) {
             p.y = 0;
             p.vy = 0;
           }
         }
+
+        // Física dos 5 Trampolins (Mapa: Circo Saltitante)
+        if (
+          Array.isArray(mapPhysics.trampolines) &&
+          mapPhysics.trampolines.length > 0 &&
+          p.y <= 0.45 &&
+          p.vy <= 1.5 &&
+          now - (p.lastTrampolineJumpAt || 0) > 320
+        ) {
+          for (let tIdx = 0; tIdx < mapPhysics.trampolines.length; tIdx++) {
+            const tramp = mapPhysics.trampolines[tIdx];
+            const dx = p.x - tramp.x;
+            const dz = p.z - tramp.z;
+            const r = (tramp.radius || 1.3) + 0.25;
+            if (dx * dx + dz * dz <= r * r) {
+              p.vy = tramp.jumpForce || 14.8;
+              p.y = 0.25;
+              p.lastTrampolineJumpAt = now;
+
+              // Impulso horizontal suave na direção do movimento para fugir pelos ares
+              if (p.inputX !== 0 || p.inputZ !== 0) {
+                p.vx += p.inputX * 6.5;
+                p.vz += p.inputZ * 6.5;
+              }
+
+              this.io.to(room.id).emit('match:trampoline_jump', {
+                playerId: p.socketId,
+                trampIndex: tIdx,
+                x: tramp.x,
+                z: tramp.z
+              });
+              break;
+            }
+          }
+        }
       } else {
-        p.vy -= 26 * dt;
+        const fallGrav = mapPhysics.lowGravity && p.y > -2.5 ? (Number(mapPhysics.gravity) || 9.0) * 1.35 : 26;
+        p.vy -= fallGrav * dt;
         p.y += p.vy * dt;
       }
 
-      const friction = mapPhysics.friction || 0.88;
-      p.vx *= friction;
-      p.vz *= friction;
+      const baseFriction = mapPhysics.friction || 0.88;
+      const frictionFactor = Math.pow(baseFriction, dt * 30);
+      p.vx *= frictionFactor;
+      p.vz *= frictionFactor;
 
       p.x += p.vx * dt;
       p.z += p.vz * dt;
 
-      if (Array.isArray(mapPhysics.pillars) && p.y >= -0.2) {
-        for (const pillar of mapPhysics.pillars) {
+      if (Array.isArray(mapPhysics.pillars) && p.y >= -0.2 && p.y <= 2.8) {
+        for (let k = 0; k < mapPhysics.pillars.length; k++) {
+          const pillar = mapPhysics.pillars[k];
           const dx = p.x - pillar.x;
           const dz = p.z - pillar.z;
-          const dist = Math.hypot(dx, dz);
           const minDist = (pillar.radius || 1.1) + 0.65;
-          if (dist < minDist && dist > 0.001) {
+          const distSq = dx * dx + dz * dz;
+          if (distSq < minDist * minDist && distSq > 0.000001) {
+            const dist = Math.sqrt(distSq);
             const nx = dx / dist;
             const nz = dz / dist;
             p.x = pillar.x + nx * minDist;
@@ -1896,25 +1930,28 @@ class RoomManager {
       }
     }
 
+    const PLAYER_MIN_DIST = 1.3;
+    const PLAYER_MIN_DIST_SQ = PLAYER_MIN_DIST * PLAYER_MIN_DIST;
+
     for (let i = 0; i < playersArr.length; i++) {
       const p1 = playersArr[i];
-      if (!p1.alive || p1.y < -0.5 || p1.grabbedById) continue;
+      if (!p1.alive || p1.y < -0.5 || p1.grabbedById || p1.invisibleUntil > now) continue;
 
       for (let j = i + 1; j < playersArr.length; j++) {
         const p2 = playersArr[j];
-        if (!p2.alive || p2.y < -0.5 || p2.grabbedById) continue;
-
-        if (p1.invisibleUntil > now || p2.invisibleUntil > now) continue;
+        if (!p2.alive || p2.y < -0.5 || p2.grabbedById || p2.invisibleUntil > now) continue;
+        // Se um estiver pulando alto no trampolim e o outro no chão, não colide no ar
+        if (Math.abs(p1.y - p2.y) > 1.7) continue;
 
         const dx = p2.x - p1.x;
         const dz = p2.z - p1.z;
-        const dist = Math.hypot(dx, dz);
-        const minDist = 1.3;
+        const distSq = dx * dx + dz * dz;
 
-        if (dist < minDist && dist > 0.001) {
+        if (distSq < PLAYER_MIN_DIST_SQ && distSq > 0.000001) {
+          const dist = Math.sqrt(distSq);
           const nx = dx / dist;
           const nz = dz / dist;
-          const overlap = (minDist - dist) * 0.5;
+          const overlap = (PLAYER_MIN_DIST - dist) * 0.5;
 
           p1.x -= nx * overlap;
           p1.z -= nz * overlap;
@@ -1932,39 +1969,61 @@ class RoomManager {
       }
     }
 
-    this.io.to(room.id).emit('match:state', {
-      arenaRadius: Number(room.currentArenaRadius.toFixed(2)),
+    // Serialização enxuta (Sparse Payload) sem alocações de string (.toFixed):
+    // Reduz o tamanho do pacote WebSocket em ~60% omitindo flags falsas/nulas!
+    const serializedPlayers = new Array(playersArr.length);
+    for (let i = 0; i < playersArr.length; i++) {
+      const p = playersArr[i];
+      if (!p.alive && p.y <= -10.8) {
+        serializedPlayers[i] = { id: p.socketId, y: -12, alive: false };
+        continue;
+      }
+
+      const item = {
+        id: p.socketId,
+        x: round2(p.x),
+        y: round2(p.y),
+        z: round2(p.z),
+        vx: round2(p.vx),
+        vy: round2(p.vy),
+        vz: round2(p.vz),
+        ry: round2(p.rotationY),
+        alive: p.alive
+      };
+
+      const chargeVal = round2(Math.max(p.chargePower || 0, p.grabChargePower || 0));
+      if (chargeVal > 0) item.charge = chargeVal;
+      if (p.grabbedById) {
+        item.grabbedById = p.grabbedById;
+        if (p.escapePresses) item.escapePresses = p.escapePresses;
+      }
+      if (p.grabbedTargetId) item.grabbedTargetId = p.grabbedTargetId;
+      if (now < p.stunnedUntil) item.stunned = true;
+      if (now < p.invisibleUntil) item.invisible = true;
+      if (now < p.heavyUntil) item.heavy = true;
+      if (now < p.shockedUntil) item.shocked = true;
+      if (now < p.knockedOutUntil) item.knockedOut = true;
+      if (p.hasMegaShove) item.hasMegaShove = true;
+      if (p.hasShockWeapon) item.hasShockWeapon = true;
+      if (p.hasBoxingGlove) item.hasBoxingGlove = true;
+
+      serializedPlayers[i] = item;
+    }
+
+    const pwrEnabled =
+      room.powerupsEnabled !== false &&
+      (!Array.isArray(room.selectedPowerupIds) || room.selectedPowerupIds.length > 0);
+
+    this.io.to(room.id).volatile.emit('match:state', {
+      arenaRadius: round2(room.currentArenaRadius),
       currentRound: room.currentRound,
       totalRounds: room.totalRounds,
       combatLocked: Boolean(room.combatLocked),
       timeRemaining: Math.ceil(room.matchTimeRemaining),
-      speedMultiplier: Number(room.speedMultiplier.toFixed(2)),
-      powerupsEnabled: room.powerupsEnabled !== false,
-      nextPowerupIn: room.powerupsEnabled !== false ? Math.max(1, Math.ceil(room.powerupTimerSec)) : null,
-      powerups: Array.from(room.powerups.values()),
-      players: playersArr.map((p) => ({
-        id: p.socketId,
-        username: p.username,
-        skinColor: p.skinColor,
-        teamId: p.teamId,
-        x: Number(p.x.toFixed(2)),
-        y: Number(p.y.toFixed(2)),
-        z: Number(p.z.toFixed(2)),
-        ry: Number(p.rotationY.toFixed(2)),
-        charge: Number(Math.max(p.chargePower, p.grabChargePower).toFixed(2)),
-        grabbedById: p.grabbedById,
-        grabbedTargetId: p.grabbedTargetId,
-        escapePresses: p.escapePresses || 0,
-        stunned: now < p.stunnedUntil,
-        invisible: now < p.invisibleUntil,
-        heavy: now < p.heavyUntil,
-        shocked: now < p.shockedUntil,
-        hasMegaShove: Boolean(p.hasMegaShove),
-        hasShockWeapon: Boolean(p.hasShockWeapon),
-        alive: p.alive,
-        kills: p.kills,
-        roundWins: p.roundWins || 0
-      }))
+      powerupsEnabled: pwrEnabled,
+      nextPowerupIn: pwrEnabled ? Math.max(1, Math.ceil(room.powerupTimerSec)) : null,
+      powerups: room.powerups.size > 0 ? Array.from(room.powerups.values()) : [],
+      players: serializedPlayers
     });
 
     if (!room.combatLocked) {
@@ -1973,7 +2032,11 @@ class RoomManager {
   }
 
   updateBotAI(room, bot, playersArr, dt, now) {
-    if (now < bot.stunnedUntil || now < bot.shockedUntil) {
+    if (
+      now < bot.stunnedUntil ||
+      now < bot.shockedUntil ||
+      now < bot.knockedOutUntil
+    ) {
       bot.inputX = 0;
       bot.inputZ = 0;
       return;
@@ -1996,28 +2059,60 @@ class RoomManager {
     }
 
     let nearestTarget = null;
-    let minDist = Infinity;
+    let minDistSq = Infinity;
 
-    for (const other of playersArr) {
-      if (other.socketId === bot.socketId || !other.alive || other.y < -0.2) continue;
-      if (this.isProtectedTeammate(room, bot, other)) continue;
-      if (other.invisibleUntil > now) continue;
-
-      const d = Math.hypot(other.x - bot.x, other.z - bot.z);
-      if (d < minDist) {
-        minDist = d;
-        nearestTarget = other;
+    if (
+      bot.cachedTargetId &&
+      now - (bot.lastTargetScanAt || 0) < 95
+    ) {
+      const cached = room.players.get(bot.cachedTargetId);
+      if (
+        cached &&
+        cached.alive &&
+        cached.y >= -0.2 &&
+        cached.invisibleUntil <= now &&
+        !this.isProtectedTeammate(room, bot, cached)
+      ) {
+        const dx = cached.x - bot.x;
+        const dz = cached.z - bot.z;
+        minDistSq = dx * dx + dz * dz;
+        nearestTarget = cached;
       }
     }
+
+    if (!nearestTarget) {
+      bot.lastTargetScanAt = now;
+      for (let i = 0; i < playersArr.length; i++) {
+        const other = playersArr[i];
+        if (other.socketId === bot.socketId || !other.alive || other.y < -0.2) continue;
+        if (this.isProtectedTeammate(room, bot, other)) continue;
+        if (other.invisibleUntil > now) continue;
+
+        const dx = other.x - bot.x;
+        const dz = other.z - bot.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          nearestTarget = other;
+        }
+      }
+      bot.cachedTargetId = nearestTarget ? nearestTarget.socketId : null;
+    }
+
+    const minDist = minDistSq < Infinity ? Math.sqrt(minDistSq) : Infinity;
 
     let targetX = nearestTarget ? nearestTarget.x : 0;
     let targetZ = nearestTarget ? nearestTarget.z : 0;
     for (const pwr of room.powerups.values()) {
-      const dp = Math.hypot(pwr.x - bot.x, pwr.z - bot.z);
-      if (pwr.y <= 1.2 && dp < 4.5 && dp < minDist) {
-        targetX = pwr.x;
-        targetZ = pwr.z;
-        break;
+      if (pwr.y <= 1.2) {
+        const dx = pwr.x - bot.x;
+        const dz = pwr.z - bot.z;
+        const dpSq = dx * dx + dz * dz;
+        if (dpSq < 20.25 && dpSq < minDistSq) {
+          targetX = pwr.x;
+          targetZ = pwr.z;
+          break;
+        }
       }
     }
 
@@ -2046,8 +2141,9 @@ class RoomManager {
       moveZ += (bot.z / safeDist) * pushOut;
     }
 
-    const norm = Math.hypot(moveX, moveZ);
-    if (norm > 1) {
+    const normSq = moveX * moveX + moveZ * moveZ;
+    if (normSq > 1) {
+      const norm = Math.sqrt(normSq);
       moveX /= norm;
       moveZ /= norm;
     }
@@ -2057,7 +2153,10 @@ class RoomManager {
 
     bot.botCooldown -= dt;
     if (nearestTarget && minDist < 3.2 && bot.botCooldown <= 0) {
-      if (bot.hasShockWeapon && minDist < 4.5) {
+      if (bot.hasBoxingGlove && minDist < 3.1) {
+        this.executeShove(room, bot, 0.8);
+        bot.botCooldown = 1.0;
+      } else if (bot.hasShockWeapon && minDist < 4.5) {
         this.executeShove(room, bot, 0.6);
         bot.botCooldown = 1.0;
       } else if (minDist < 2.1 && Math.random() < 0.35 && !(nearestTarget.heavyUntil > now)) {
@@ -2110,7 +2209,7 @@ class RoomManager {
         }
 
         this.handleRoundCompletion(room, {
-          roundWinnerName: teamMeta ? `${teamMeta.icon} ${teamMeta.name}` : 'Empate'
+          roundWinnerName: teamMeta ? teamMeta.name : 'Empate'
         });
       }
     }
@@ -2141,8 +2240,7 @@ class RoomManager {
 
   async finalizeMultiRoundMatch(room) {
     const playersArr = Array.from(room.players.values());
-    let resultSummary = null;
-    let winningSocketIds = new Set();
+    const winningSocketIds = new Set();
 
     if (room.teamSize <= 1) {
       const sorted = [...playersArr].sort(
@@ -2153,33 +2251,6 @@ class RoomManager {
       );
       const champion = sorted[0];
       if (champion) winningSocketIds.add(champion.socketId);
-
-      const winnersList = playersArr
-        .filter((p) => winningSocketIds.has(p.socketId))
-        .map((p) => ({
-          id: p.socketId,
-          username: p.username,
-          skinColor: p.skinColor,
-          teamId: p.teamId
-        }));
-
-      const losersList = playersArr
-        .filter((p) => !winningSocketIds.has(p.socketId))
-        .map((p) => ({
-          id: p.socketId,
-          username: p.username,
-          skinColor: p.skinColor,
-          teamId: p.teamId
-        }));
-
-      resultSummary = {
-        winnerType: 'SOLO',
-        winnerName: champion ? champion.username : 'Empate!',
-        winnerColor: champion ? champion.skinColor : '#FFD600',
-        winnerTeam: null,
-        winnersList,
-        losersList
-      };
     } else {
       let bestTeamId = null;
       let maxTeamWins = -1;
@@ -2191,33 +2262,96 @@ class RoomManager {
           bestTeamId = p.teamId;
         }
       }
-
-      const teamMeta = TEAMS_CATALOG.find((t) => t.id === bestTeamId) || TEAMS_CATALOG[0];
       for (const p of playersArr) {
         if (p.teamId === bestTeamId) winningSocketIds.add(p.socketId);
       }
+    }
 
-      const winnersList = playersArr
-        .filter((p) => winningSocketIds.has(p.socketId))
-        .map((p) => ({
-          id: p.socketId,
-          username: p.username,
-          skinColor: p.skinColor,
-          teamId: p.teamId
-        }));
+    // Atualiza XP e Nível de todos os jogadores reais em paralelo ANTES de montar
+    // winnersList e losersList para que o nível exibido na tela de vitória esteja atualizado!
+    const xpReportBySocket = {};
+    const realPlayers = playersArr.filter((p) => !p.isBot);
 
-      const losersList = playersArr
-        .filter((p) => !winningSocketIds.has(p.socketId))
-        .map((p) => ({
-          id: p.socketId,
-          username: p.username,
-          skinColor: p.skinColor,
-          teamId: p.teamId
-        }));
+    await Promise.all(
+      realPlayers.map(async (p) => {
+        const isWinner = winningSocketIds.has(p.socketId);
+        const shoves = p.totalShoves || 0;
+        const kills = p.totalKills || 0;
+        const roundWins = p.roundWins || 0;
 
+        const xpFromShoves = shoves * 15;
+        const xpFromKills = kills * 50;
+        const xpFromRounds = roundWins * 60;
+        const xpFromWin = isWinner ? 150 : 25;
+        const totalXpGained = xpFromShoves + xpFromKills + xpFromRounds + xpFromWin;
+
+        const progressResult = await authRoutes.updateUserMatchStats(p.userId, p.stats, {
+          wins: isWinner ? 1 : 0,
+          matches: 1,
+          shoves,
+          kills,
+          xpGained: totalXpGained
+        });
+
+        p.stats = progressResult.stats;
+        p.level = progressResult.newLevel || progressResult.stats?.level || 1;
+
+        xpReportBySocket[p.socketId] = {
+          isWinner,
+          shoves,
+          kills,
+          roundWins,
+          xpFromShoves,
+          xpFromKills,
+          xpFromRounds,
+          xpFromWin,
+          totalXpGained,
+          previousLevel: progressResult.previousLevel,
+          newLevel: progressResult.newLevel,
+          leveledUp: progressResult.leveledUp,
+          updatedStats: progressResult.stats
+        };
+      })
+    );
+
+    const winnersList = playersArr
+      .filter((p) => winningSocketIds.has(p.socketId))
+      .map((p) => ({
+        id: p.socketId,
+        username: p.username,
+        skinColor: p.skinColor,
+        level: p.stats?.level || p.level || 1,
+        teamId: p.teamId
+      }));
+
+    const losersList = playersArr
+      .filter((p) => !winningSocketIds.has(p.socketId))
+      .map((p) => ({
+        id: p.socketId,
+        username: p.username,
+        skinColor: p.skinColor,
+        level: p.stats?.level || p.level || 1,
+        teamId: p.teamId
+      }));
+
+    let resultSummary = null;
+    if (room.teamSize <= 1) {
+      const champion = winnersList[0];
+      resultSummary = {
+        winnerType: 'SOLO',
+        winnerName: champion ? `${champion.username} (Nv. ${champion.level})` : 'Empate!',
+        winnerColor: champion ? champion.skinColor : '#FFD600',
+        winnerTeam: null,
+        winnersList,
+        losersList
+      };
+    } else {
+      const winnerSample = winnersList[0];
+      const teamMeta =
+        TEAMS_CATALOG.find((t) => t.id === winnerSample?.teamId) || TEAMS_CATALOG[0];
       resultSummary = {
         winnerType: 'TEAM',
-        winnerName: teamMeta ? `${teamMeta.icon} ${teamMeta.name}` : 'Empate!',
+        winnerName: teamMeta ? teamMeta.name : 'Empate!',
         winnerColor: teamMeta ? teamMeta.color : '#00E5FF',
         winnerTeam: teamMeta || null,
         winnersList,
@@ -2225,53 +2359,11 @@ class RoomManager {
       };
     }
 
-    const xpReportBySocket = {};
-
-    for (const p of playersArr) {
-      if (p.isBot) continue;
-
-      const isWinner = winningSocketIds.has(p.socketId);
-      const shoves = p.totalShoves || 0;
-      const kills = p.totalKills || 0;
-      const roundWins = p.roundWins || 0;
-
-      const xpFromShoves = shoves * 15;
-      const xpFromKills = kills * 50;
-      const xpFromRounds = roundWins * 60;
-      const xpFromWin = isWinner ? 150 : 25;
-      const totalXpGained = xpFromShoves + xpFromKills + xpFromRounds + xpFromWin;
-
-      const progressResult = await authRoutes.updateUserMatchStats(p.userId, p.stats, {
-        wins: isWinner ? 1 : 0,
-        matches: 1,
-        shoves,
-        kills,
-        xpGained: totalXpGained
-      });
-
-      p.stats = progressResult.stats;
-
-      xpReportBySocket[p.socketId] = {
-        isWinner,
-        shoves,
-        kills,
-        roundWins,
-        xpFromShoves,
-        xpFromKills,
-        xpFromRounds,
-        xpFromWin,
-        totalXpGained,
-        previousLevel: progressResult.previousLevel,
-        newLevel: progressResult.newLevel,
-        leveledUp: progressResult.leveledUp,
-        updatedStats: progressResult.stats
-      };
-    }
-
     const ranking = playersArr
       .map((p) => ({
         username: p.username,
         skinColor: p.skinColor,
+        level: p.stats?.level || p.level || 1,
         teamId: p.teamId,
         roundWins: p.roundWins || 0,
         kills: p.totalKills || 0,
@@ -2284,6 +2376,11 @@ class RoomManager {
           b.kills - a.kills ||
           b.shovesCount - a.shovesCount
       );
+
+    for (const p of realPlayers) {
+      const s = this.io.sockets.sockets.get(p.socketId);
+      if (s) s.join('lobby');
+    }
 
     if (room.mode === 'PRIVATE') {
       room.status = 'WAITING';
@@ -2305,22 +2402,20 @@ class RoomManager {
     });
 
     if (room.mode === 'BATTLEROYALE') {
-      for (const p of room.players.values()) {
-        if (!p.isBot) {
-          const s = this.io.sockets.sockets.get(p.socketId);
-          if (s) {
-            s.leave(room.id);
-            s.currentRoomId = null;
-          }
+      for (const p of realPlayers) {
+        const s = this.io.sockets.sockets.get(p.socketId);
+        if (s) {
+          s.leave(room.id);
+          s.currentRoomId = null;
         }
       }
       this.rooms.delete(room.id);
+    deleteRoomFromRedis(room.id);
     } else {
       this.broadcastRoomState(room.id);
     }
 
     this.broadcastPublicRoomsList();
-    this.broadcastFriendsPresence();
   }
 
   clearRoomTimers(room) {
@@ -2362,11 +2457,23 @@ class RoomManager {
       isOpenJoin: Boolean(room.isOpenJoin),
       totalRounds: room.totalRounds || DEFAULT_TOTAL_ROUNDS,
       currentRound: room.currentRound || 1,
-      selectedMapIds: room.selectedMapIds || this.mapsList.map((m) => m.id),
+      selectedMapIds: Array.isArray(room.selectedMapIds)
+        ? room.selectedMapIds
+        : this.mapsList.map((m) => m.id),
+      selectedPowerupIds: Array.isArray(room.selectedPowerupIds)
+        ? room.selectedPowerupIds
+        : POWERUP_TYPES.map((p) => p.type),
       allMapsCatalog: this.mapsList.map((m) => ({
         id: m.id,
         name: m.name,
         description: m.description
+      })),
+      allPowerupsCatalog: POWERUP_TYPES.map((p) => ({
+        id: p.type,
+        type: p.type,
+        name: p.name,
+        icon: p.icon,
+        color: p.color
       })),
       playerSpeedMultiplier: room.playerSpeedMultiplier || 1.0,
       powerupsEnabled: room.powerupsEnabled !== false,
@@ -2379,11 +2486,13 @@ class RoomManager {
       minRealPlayers: room.minRealPlayers || this.BR_MIN_REAL_PLAYERS,
       selectedMap: room.selectedMap,
       availableTeams,
+      chatHistory: Array.isArray(room.chatHistory) ? room.chatHistory : [],
       joinRequests: room.joinRequests
         ? Array.from(room.joinRequests.values()).map((r) => ({
             socketId: r.socketId,
             username: r.username,
-            skinColor: r.skinColor
+            skinColor: r.skinColor,
+            level: r.level || 1
           }))
         : [],
       players: Array.from(room.players.values()).map((p) => {
@@ -2393,6 +2502,7 @@ class RoomManager {
           userId: p.userId,
           username: p.username,
           skinColor: p.skinColor,
+          level: p.stats?.level || p.level || 1,
           stats: p.stats || null,
           teamId: p.teamId,
           teamName: teamMeta ? teamMeta.name : null,
@@ -2405,9 +2515,97 @@ class RoomManager {
     };
   }
 
+  /**
+   * Processa envio de mensagem no chat da sala/partida:
+   * - Histórico fica exclusivamente no cache em memória da sala (`room.chatHistory`)
+   * - Morre automaticamente quando a sala é removida de `this.rooms`
+   * - Limite estrito de 100 caracteres por mensagem
+   * - Inclui a cor do personagem (`skinColor`) escolhida pelo jogador
+   */
+  handleChatMessage(socket, { text }) {
+    const roomId = socket.currentRoomId;
+    if (!roomId) {
+      return { error: 'Você precisa estar em uma sala para usar o chat.' };
+    }
+
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      return { error: 'Esta sala não existe mais na memória.' };
+    }
+
+    const player = room.players.get(socket.id);
+    if (!player) {
+      return { error: 'Jogador não encontrado nesta sala.' };
+    }
+
+    const cleanText = String(text || '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .trim()
+      .substring(0, 100);
+
+    if (!cleanText) {
+      return { error: 'Digite uma mensagem válida (máx. 100 caracteres).' };
+    }
+
+    if (!Array.isArray(room.chatHistory)) {
+      room.chatHistory = [];
+    }
+
+    const msgEntry = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      senderSocketId: socket.id,
+      senderUserId: player.userId || socket.userId || null,
+      username: player.username || 'Jogador',
+      skinColor: player.skinColor || '#00f2fe',
+      text: cleanText,
+      timestamp: Date.now()
+    };
+
+    room.chatHistory.push(msgEntry);
+    if (room.chatHistory.length > 120) {
+      room.chatHistory.shift();
+    }
+
+    this.io.to(room.id).emit('room:chat_message', {
+      roomId: room.id,
+      message: msgEntry
+    });
+
+    return { success: true, message: msgEntry };
+  }
+
+  /**
+   * Salva no Redis APENAS os metadados da sala criada (sem dados de física da partida).
+   * Tudo o que acontece dentro da partida permanece 100% na memória RAM.
+   */
+  syncRoomMetadataToRedis(room) {
+    if (!room || !room.id) return;
+    cacheRoomInRedis({
+      id: room.id,
+      mode: room.mode,
+      hostId: room.hostId,
+      hostName: room.hostName,
+      maxPlayers: room.maxPlayers,
+      teamSize: room.teamSize,
+      friendlyFire: Boolean(room.friendlyFire),
+      isOpenJoin: Boolean(room.isOpenJoin),
+      totalRounds: room.totalRounds,
+      selectedMapIds: room.selectedMapIds,
+      selectedPowerupIds: room.selectedPowerupIds,
+      playerSpeedMultiplier: room.playerSpeedMultiplier,
+      powerupsEnabled: Boolean(room.powerupsEnabled),
+      powerupSpawnInterval: room.powerupSpawnInterval,
+      matchDuration: room.matchDuration,
+      botCount: room.botCount,
+      status: room.status,
+      playersCount: room.players ? room.players.size : 0
+    });
+  }
+
   broadcastRoomState(roomId) {
     const room = this.rooms.get(roomId);
     if (!room) return;
+    this.syncRoomMetadataToRedis(room);
     this.io.to(roomId).emit('room:update', this.serializeRoom(room));
   }
 }

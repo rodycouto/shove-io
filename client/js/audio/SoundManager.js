@@ -1,11 +1,8 @@
 // client/js/audio/SoundManager.js
 // ============================================================================
 // Sintetizador de Áudio Procedural (Web Audio API) para o Shove.io.
-// Gera todos os efeitos sonoros e a Música Ambiente Animada do Lobby:
-// - Música ambiente alegre e animada no Lobby (interrompida ao iniciar partida)
-// - Beep da Contagem Regressiva de 5s (5, 4, 3, 2, 1 - SHOVE!)
-// - Empurrão (Shove), Mega Shove (4x), Segurar/Levantar (Grab), Escapar, Stun,
-//   Arma de Shock, Power-ups, Queda da Arena, Cliques, Level Up e Vitória!
+// Inclui som de salto nos trampolins (Circo Saltitante) e soco/nocaute da
+// Luva de Boxe (Boxing Glove KO).
 // ============================================================================
 
 export class SoundManager {
@@ -24,8 +21,8 @@ export class SoundManager {
         this.scheduleLobbyMusicLoop();
       }
     };
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock, { passive: true });
   }
 
   ensureContext() {
@@ -129,9 +126,6 @@ export class SoundManager {
     }, 220);
   }
 
-  /**
-   * Som para a contagem regressiva de 5 segundos (5, 4, 3, 2, 1 - SHOVE!).
-   */
   playCountdownBeep(isFinalShove = false) {
     const ctx = this.ensureContext();
     if (!ctx) return;
@@ -230,6 +224,63 @@ export class SoundManager {
     osc2.start(now);
     osc1.stop(now + 0.45);
     osc2.stop(now + 0.45);
+  }
+
+  /**
+   * Som de impacto pesado e gongo de nocaute da Luva de Boxe (KO 2s).
+   */
+  playBoxingKnockout() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const punchOsc = ctx.createOscillator();
+    const punchGain = ctx.createGain();
+    punchOsc.type = 'sawtooth';
+    punchOsc.frequency.setValueAtTime(240, now);
+    punchOsc.frequency.exponentialRampToValueAtTime(32, now + 0.28);
+    punchGain.gain.setValueAtTime(0.4, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+    punchOsc.connect(punchGain);
+    punchGain.connect(ctx.destination);
+    punchOsc.start(now);
+    punchOsc.stop(now + 0.28);
+
+    // Som de sino de ringue de boxe logo após o soco
+    const bellOsc = ctx.createOscillator();
+    const bellGain = ctx.createGain();
+    bellOsc.type = 'triangle';
+    bellOsc.frequency.setValueAtTime(1180, now + 0.08);
+    bellGain.gain.setValueAtTime(0.22, now + 0.08);
+    bellGain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+    bellOsc.connect(bellGain);
+    bellGain.connect(ctx.destination);
+    bellOsc.start(now + 0.08);
+    bellOsc.stop(now + 0.55);
+  }
+
+  /**
+   * Som de mola elástica (Boing!) ao saltar nos 5 trampolins do Circo Saltitante.
+   */
+  playTrampolineJump() {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(190, now);
+    osc.frequency.exponentialRampToValueAtTime(680, now + 0.26);
+
+    gain.gain.setValueAtTime(0.24, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.26);
   }
 
   playGrab() {

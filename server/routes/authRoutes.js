@@ -1,7 +1,12 @@
 // server/routes/authRoutes.js
 // ============================================================================
-// Rotas de autenticação (Registro, Login, Convidado), Lista de Amigos e
-// Persistência de Estatísticas (Vitórias, Partidas, Shoves, Kills, XP e Níveis).
+// Rotas de Autenticação (Registro, Login, Convidado), Persistência de
+// Estatísticas (XP / Níveis) e Sistema Completo de Amigos:
+// - Verifica rigorosamente no banco de dados (ou memória ativa) se o nickname
+//   existe antes de enviar solicitação de amizade.
+// - Envia solicitação pendente (não adiciona direto na lista de amigos).
+// - Exige aprovação explícita do destinatário para virar amigo.
+// - Inclui o nível (level) de cada jogador ao lado do nome na lista de amigos.
 // ============================================================================
 
 const express = require('express');
@@ -9,12 +14,55 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { getDbStatus } = require('../config/db');
+const {
+  cacheUserInRedis,
+  getCachedUserFromRedis,
+  getCachedUserIdByUsername
+} = require('../config/redis');
 const ENV = require('../config/env');
 
 const router = express.Router();
 
-// Armazenamento em memória para modo fallback ou convidados ativos na sessão
+// Armazenamento em memória controlado (LRU/TTL) para modo fallback e convidados
 const memoryUsers = new Map();
+const MAX_MEMORY_USERS = 1500;
+const GUEST_TTL_MS = 2 * 60 * 60 * 1000;
+
+function escapeRegex(str = '') {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pruneMemoryUsers() {
+  const now = Date.now();
+  for (const [key, user] of memoryUsers.entries()) {
+    if (user.isGuest && now - (user.lastSeen || 0) > GUEST_TTL_MS) {
+      memoryUsers.delete(key);
+    }
+  }
+  while (memoryUsers.size > MAX_MEMORY_USERS) {
+    const oldestKey = memoryUsers.keys().next().value;
+    if (!oldestKey) break;
+    memoryUsers.delete(oldestKey);
+  }
+}
+
+function setMemoryUser(id, userObj) {
+  if (memoryUsers.has(id)) {
+    memoryUsers.delete(id);
+  } else if (memoryUsers.size >= MAX_MEMORY_USERS) {
+    pruneMemoryUsers();
+  }
+  userObj.lastSeen = Date.now();
+  if (!Array.isArray(userObj.friends)) userObj.friends = [];
+  if (!Array.isArray(userObj.friendRequests)) userObj.friendRequests = [];
+  memoryUsers.set(id, userObj);
+  cacheUserInRedis(userObj);
+}
+
+const cleanupTimer = setInterval(pruneMemoryUsers, 15 * 60 * 1000);
+if (typeof cleanupTimer.unref === 'function') {
+  cleanupTimer.unref();
+}
 
 function getXpForNextLevel(level = 1) {
   return Math.max(1, Number(level) || 1) * 200;
@@ -34,9 +82,321 @@ function normalizeStats(rawStats = {}) {
   };
 }
 
+function isMongoUserId(userId) {
+  return (
+    Boolean(userId) &&
+    !String(userId).startsWith('guest_') &&
+    !String(userId).startsWith('mem_') &&
+    /^[a-f\d]{24}$/i.test(String(userId))
+  );
+}
+
 /**
- * Atualiza e persiste as estatísticas e o XP/Nível de um jogador ao término da partida.
+ * Localiza um usuário por ID no MongoDB ou no Map em memória.
  */
+async function findUserById(userId) {
+  if (!userId) return null;
+  if (getDbStatus() && isMongoUserId(userId)) {
+    try {
+      const doc = await User.findById(userId);
+      if (doc) return { source: 'mongo', doc };
+    } catch (_) {}
+  }
+  if (memoryUsers.has(userId)) {
+    return { source: 'memory', doc: memoryUsers.get(userId) };
+  }
+  const redisUser = await getCachedUserFromRedis(userId);
+  if (redisUser) {
+    memoryUsers.set(userId, redisUser);
+    return { source: 'memory', doc: redisUser };
+  }
+  return null;
+}
+
+/**
+ * Localiza um usuário pelo Nickname exato (case-insensitive) no banco de dados
+ * ou na memória ativa.
+ */
+async function findUserByUsername(username) {
+  const clean = String(username || '').trim();
+  if (!clean) return null;
+
+  if (getDbStatus()) {
+    try {
+      const doc = await User.findOne({
+        username: new RegExp(`^${escapeRegex(clean)}$`, 'i')
+      });
+      if (doc) return { source: 'mongo', doc };
+    } catch (_) {}
+  }
+
+  const lower = clean.toLowerCase();
+  for (const u of memoryUsers.values()) {
+    if (String(u.username || '').toLowerCase() === lower) {
+      return { source: 'memory', doc: u };
+    }
+  }
+
+  const cachedId = await getCachedUserIdByUsername(clean);
+  if (cachedId) {
+    const redisUser = await getCachedUserFromRedis(cachedId);
+    if (redisUser) {
+      memoryUsers.set(cachedId, redisUser);
+      return { source: 'memory', doc: redisUser };
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrai apenas o ID (String) de qualquer item salvo em `friends` ou `friendRequests`
+ * (compatível com IDs puros e com documentos legados que tinham subobjetos).
+ */
+function extractStoredId(item) {
+  if (!item) return '';
+  if (typeof item === 'string') return item.trim();
+  if (typeof item === 'object') {
+    return String(item.userId || item.fromUserId || item._id || item.id || '').trim();
+  }
+  return '';
+}
+
+function normalizeIdList(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  const uniqueIds = [];
+  const seen = new Set();
+  for (const item of rawList) {
+    const id = extractStoredId(item);
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      uniqueIds.push(id);
+    }
+  }
+  return uniqueIds;
+}
+
+function extractUserSummary(record) {
+  if (!record || !record.doc) return null;
+  const d = record.doc;
+  const id = record.source === 'mongo' ? d._id.toString() : d.id;
+  const stats = normalizeStats(d.stats);
+  return {
+    id,
+    username: d.username,
+    skinColor: d.skinColor || '#FF3366',
+    level: stats.level,
+    stats,
+    friends: normalizeIdList(d.friends),
+    friendRequests: normalizeIdList(d.friendRequests)
+  };
+}
+
+/**
+ * Retorna a lista atualizada de amigos e solicitações pendentes de um jogador.
+ * Como o banco salva apenas os IDs dos amigos, os dados (nickname, cor e nível)
+ * são buscados em tempo real no registro atual de cada amigo!
+ */
+async function getFriendsState(userId) {
+  const found = await findUserById(userId);
+  if (!found) {
+    return { friends: [], friendRequests: [] };
+  }
+  const summary = extractUserSummary(found);
+
+  const enrichedFriends = (
+    await Promise.all(
+      summary.friends.map(async (friendId) => {
+        const friendRecord = await findUserById(friendId);
+        if (!friendRecord) return null;
+        const fSum = extractUserSummary(friendRecord);
+        return {
+          userId: fSum.id,
+          username: fSum.username,
+          skinColor: fSum.skinColor,
+          level: fSum.level
+        };
+      })
+    )
+  ).filter(Boolean);
+
+  const enrichedRequests = (
+    await Promise.all(
+      summary.friendRequests.map(async (fromId) => {
+        const reqRecord = await findUserById(fromId);
+        if (!reqRecord) return null;
+        const rSum = extractUserSummary(reqRecord);
+        return {
+          fromUserId: rSum.id,
+          fromUsername: rSum.username,
+          fromSkinColor: rSum.skinColor,
+          fromLevel: rSum.level
+        };
+      })
+    )
+  ).filter(Boolean);
+
+  return {
+    friends: enrichedFriends,
+    friendRequests: enrichedRequests
+  };
+}
+
+/**
+ * Envia uma solicitação de amizade após verificar se o nickname realmente existe
+ * no banco de dados (ou memória ativa). Salva apenas o ID do remetente.
+ */
+async function sendFriendRequest(fromUserId, targetNickname) {
+  const cleanTarget = String(targetNickname || '').trim();
+  if (!cleanTarget) {
+    return { error: 'Digite o nickname do jogador para enviar a solicitação!' };
+  }
+
+  const senderRecord = await findUserById(fromUserId);
+  if (!senderRecord) {
+    return { error: 'Sua sessão expirou. Faça login novamente.' };
+  }
+  const sender = extractUserSummary(senderRecord);
+
+  const targetRecord = await findUserByUsername(cleanTarget);
+  if (!targetRecord) {
+    return {
+      error: `O jogador "${cleanTarget}" não existe no banco de dados! Verifique o nickname digitado.`
+    };
+  }
+  const target = extractUserSummary(targetRecord);
+
+  if (sender.id === target.id || sender.username.toLowerCase() === target.username.toLowerCase()) {
+    return { error: 'Você não pode enviar uma solicitação de amizade para si mesmo!' };
+  }
+
+  if (sender.friends.includes(target.id)) {
+    return { error: `${target.username} já está na sua lista de amigos!` };
+  }
+
+  if (target.friendRequests.includes(sender.id)) {
+    return { error: `Você já enviou uma solicitação para ${target.username}. Aguarde a aprovação!` };
+  }
+
+  const nextRequests = [...target.friendRequests, sender.id];
+  targetRecord.doc.friendRequests = nextRequests;
+
+  if (targetRecord.source === 'mongo') {
+    await targetRecord.doc.save();
+    cacheUserInRedis(extractUserSummary(targetRecord));
+  } else {
+    setMemoryUser(target.id, targetRecord.doc);
+  }
+
+  return {
+    success: true,
+    targetUserId: target.id,
+    targetUsername: target.username,
+    message: `Solicitação de amizade enviada para ${target.username}! Aguardando aprovação.`
+  };
+}
+
+/**
+ * Aprova ou recusa uma solicitação de amizade recebida.
+ * No MongoDB e na memória, salva apenas o ID do amigo (`String`).
+ */
+async function respondToFriendRequest(userId, fromUserId, accept = true) {
+  const userRecord = await findUserById(userId);
+  if (!userRecord) {
+    return { error: 'Usuário não encontrado.' };
+  }
+  const userSum = extractUserSummary(userRecord);
+
+  const cleanFromId = String(fromUserId || '').trim();
+  if (!userSum.friendRequests.includes(cleanFromId)) {
+    return { error: 'Solicitação de amizade não encontrada ou já respondida.' };
+  }
+
+  userRecord.doc.friendRequests = userSum.friendRequests.filter((id) => id !== cleanFromId);
+
+  const senderRecord = await findUserById(cleanFromId);
+  const senderSum = senderRecord
+    ? extractUserSummary(senderRecord)
+    : {
+        id: cleanFromId,
+        username: 'Jogador',
+        skinColor: '#FF3366',
+        level: 1,
+        friends: []
+      };
+
+  if (accept) {
+    const nextUserFriends = [...userSum.friends];
+    if (!nextUserFriends.includes(senderSum.id)) {
+      nextUserFriends.push(senderSum.id);
+    }
+    userRecord.doc.friends = nextUserFriends;
+
+    if (senderRecord) {
+      const nextSenderFriends = [...senderSum.friends];
+      if (!nextSenderFriends.includes(userSum.id)) {
+        nextSenderFriends.push(userSum.id);
+      }
+      senderRecord.doc.friends = nextSenderFriends;
+      if (senderRecord.source === 'mongo') {
+        await senderRecord.doc.save();
+        cacheUserInRedis(extractUserSummary(senderRecord));
+      } else {
+        setMemoryUser(senderSum.id, senderRecord.doc);
+      }
+    }
+  } else {
+    userRecord.doc.friends = userSum.friends;
+  }
+
+  if (userRecord.source === 'mongo') {
+    await userRecord.doc.save();
+    cacheUserInRedis(extractUserSummary(userRecord));
+  } else {
+    setMemoryUser(userSum.id, userRecord.doc);
+  }
+
+  return {
+    success: true,
+    accepted: Boolean(accept),
+    friendUserId: senderSum.id,
+    friendUsername: senderSum.username,
+    message: accept
+      ? `Você e ${senderSum.username} agora são amigos!`
+      : `Solicitação de ${senderSum.username} recusada.`
+  };
+}
+
+/**
+ * Remove o ID do amigo de ambos os perfis.
+ */
+async function removeFriend(userId, friendUserId) {
+  const userRecord = await findUserById(userId);
+  if (!userRecord) return { error: 'Usuário não encontrado.' };
+
+  const cleanFriendId = String(friendUserId || '').trim();
+  const userSum = extractUserSummary(userRecord);
+  userRecord.doc.friends = userSum.friends.filter((id) => id !== cleanFriendId);
+
+  if (userRecord.source === 'mongo') {
+    await userRecord.doc.save();
+  } else {
+    setMemoryUser(userId, userRecord.doc);
+  }
+
+  const friendRecord = await findUserById(cleanFriendId);
+  if (friendRecord) {
+    const friendSum = extractUserSummary(friendRecord);
+    friendRecord.doc.friends = friendSum.friends.filter((id) => id !== String(userId).trim());
+    if (friendRecord.source === 'mongo') {
+      await friendRecord.doc.save();
+    } else {
+      setMemoryUser(cleanFriendId, friendRecord.doc);
+    }
+  }
+
+  return { success: true, friendUserId: cleanFriendId };
+}
+
 async function updateUserMatchStats(userId, currentStats = {}, deltas = {}) {
   const base = normalizeStats(currentStats);
   const previousLevel = base.level;
@@ -53,24 +413,28 @@ async function updateUserMatchStats(userId, currentStats = {}, deltas = {}) {
   }
   base.xpToNextLevel = getXpForNextLevel(base.level);
 
-  if (userId && !String(userId).startsWith('guest_') && !String(userId).startsWith('mem_') && getDbStatus()) {
+  if (isMongoUserId(userId) && getDbStatus()) {
     try {
-      await User.findByIdAndUpdate(userId, {
-        $set: {
-          'stats.wins': base.wins,
-          'stats.matches': base.matches,
-          'stats.shoves': base.shoves,
-          'stats.kills': base.kills,
-          'stats.xp': base.xp,
-          'stats.level': base.level
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            'stats.wins': base.wins,
+            'stats.matches': base.matches,
+            'stats.shoves': base.shoves,
+            'stats.kills': base.kills,
+            'stats.xp': base.xp,
+            'stats.level': base.level
+          }
         }
-      });
+      );
     } catch (err) {
       console.warn('[Stats Update DB Warning]:', err.message);
     }
   } else if (userId && memoryUsers.has(userId)) {
     const mem = memoryUsers.get(userId);
     mem.stats = { ...base };
+    setMemoryUser(userId, mem);
   }
 
   return {
@@ -79,25 +443,6 @@ async function updateUserMatchStats(userId, currentStats = {}, deltas = {}) {
     newLevel: base.level,
     leveledUp: base.level > previousLevel
   };
-}
-
-/**
- * Salva a lista atualizada de amigos de um usuário no MongoDB ou em memória.
- */
-async function saveUserFriendsList(userId, friendsArray = []) {
-  const cleanList = Array.from(new Set(friendsArray.map((f) => String(f).trim()).filter(Boolean)));
-
-  if (userId && !String(userId).startsWith('guest_') && !String(userId).startsWith('mem_') && getDbStatus()) {
-    try {
-      await User.findByIdAndUpdate(userId, { $set: { friends: cleanList } });
-    } catch (err) {
-      console.warn('[Friends Save DB Warning]:', err.message);
-    }
-  } else if (userId && memoryUsers.has(userId)) {
-    memoryUsers.get(userId).friends = cleanList;
-  }
-
-  return cleanList;
 }
 
 function generateToken(userPayload) {
@@ -131,8 +476,12 @@ router.post('/register', async (req, res) => {
 
     if (getDbStatus()) {
       const existingUser = await User.findOne({
-        $or: [{ email: cleanEmail }, { username: cleanUsername }]
-      });
+        $or: [
+          { email: cleanEmail },
+          { username: new RegExp(`^${escapeRegex(cleanUsername)}$`, 'i') }
+        ]
+      }).lean();
+
       if (existingUser) {
         return res.status(409).json({ error: 'Nickname ou E-mail já está em uso!' });
       }
@@ -142,23 +491,27 @@ router.post('/register', async (req, res) => {
         email: cleanEmail,
         passwordHash,
         skinColor: skinColor || '#FF3366',
+        stats: { wins: 0, shoves: 0, kills: 0, matches: 0, xp: 0, level: 1 },
         friends: [],
-        stats: { wins: 0, shoves: 0, kills: 0, matches: 0, xp: 0, level: 1 }
+        friendRequests: []
       });
 
       const payload = {
         id: newUser._id.toString(),
         username: newUser.username,
         skinColor: newUser.skinColor,
-        friends: newUser.friends || [],
         stats: normalizeStats(newUser.stats),
         isGuest: false
       };
+      cacheUserInRedis({ ...payload, friends: [], friendRequests: [] });
 
       return res.status(201).json({ token: generateToken(payload), user: payload });
     } else {
       for (const u of memoryUsers.values()) {
-        if (u.email === cleanEmail || u.username.toLowerCase() === cleanUsername.toLowerCase()) {
+        if (
+          !u.isGuest &&
+          (u.email === cleanEmail || u.username.toLowerCase() === cleanUsername.toLowerCase())
+        ) {
           return res.status(409).json({ error: 'Nickname ou E-mail já cadastrado na sessão!' });
         }
       }
@@ -170,17 +523,17 @@ router.post('/register', async (req, res) => {
         email: cleanEmail,
         passwordHash,
         skinColor: skinColor || '#FF3366',
-        friends: [],
         stats: normalizeStats({ wins: 0, shoves: 0, kills: 0, matches: 0, xp: 0, level: 1 }),
+        friends: [],
+        friendRequests: [],
         isGuest: false
       };
-      memoryUsers.set(id, memUser);
+      setMemoryUser(id, memUser);
 
       const payload = {
         id: memUser.id,
         username: memUser.username,
         skinColor: memUser.skinColor,
-        friends: memUser.friends,
         stats: memUser.stats,
         isGuest: false
       };
@@ -210,7 +563,7 @@ router.post('/login', async (req, res) => {
       const user = await User.findOne({
         $or: [
           { email: queryText.toLowerCase() },
-          { username: queryText }
+          { username: new RegExp(`^${escapeRegex(queryText)}$`, 'i') }
         ]
       });
 
@@ -232,18 +585,23 @@ router.post('/login', async (req, res) => {
         id: user._id.toString(),
         username: user.username,
         skinColor: user.skinColor,
-        friends: user.friends || [],
         stats: normalizeStats(user.stats),
         isGuest: false
       };
+      cacheUserInRedis({
+        ...payload,
+        friends: normalizeIdList(user.friends),
+        friendRequests: normalizeIdList(user.friendRequests)
+      });
 
       return res.json({ token: generateToken(payload), user: payload });
     } else {
       let foundUser = null;
       for (const u of memoryUsers.values()) {
         if (
-          u.email === queryText.toLowerCase() ||
-          u.username.toLowerCase() === queryText.toLowerCase()
+          !u.isGuest &&
+          (u.email === queryText.toLowerCase() ||
+            u.username.toLowerCase() === queryText.toLowerCase())
         ) {
           foundUser = u;
           break;
@@ -260,12 +618,12 @@ router.post('/login', async (req, res) => {
       }
 
       if (skinColor) foundUser.skinColor = skinColor;
+      setMemoryUser(foundUser.id, foundUser);
 
       const payload = {
         id: foundUser.id,
         username: foundUser.username,
         skinColor: foundUser.skinColor,
-        friends: foundUser.friends || [],
         stats: normalizeStats(foundUser.stats),
         isGuest: false
       };
@@ -292,17 +650,21 @@ router.post('/guest', (req, res) => {
     id,
     username: cleanName.substring(0, 15),
     skinColor: skinColor || '#00E5FF',
-    friends: [],
     stats,
     isGuest: true
   };
 
-  memoryUsers.set(id, payload);
+  setMemoryUser(id, { ...payload, friends: [], friendRequests: [] });
   return res.json({ token: generateToken(payload), user: payload });
 });
 
 router.updateUserMatchStats = updateUserMatchStats;
-router.saveUserFriendsList = saveUserFriendsList;
 router.normalizeStats = normalizeStats;
+router.getFriendsState = getFriendsState;
+router.sendFriendRequest = sendFriendRequest;
+router.respondToFriendRequest = respondToFriendRequest;
+router.removeFriend = removeFriend;
+router.setMemoryUser = setMemoryUser;
+router.findUserById = findUserById;
 
 module.exports = router;

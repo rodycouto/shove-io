@@ -1,29 +1,23 @@
 // server/config/redis.js
 // ============================================================================
-// Gerenciador de Conexão com o Redis 8.0 (Compatível com Discloud VLAN e Local).
-// Correções aplicadas para a Discloud:
-// 1. Removido o 'return' prematuro que impedia a execução de connectRedis().
-// 2. Suporte ao Redis 8.0 ACL com usuário 'default', senha e REDIS_URL
-//    (redis://default:Hsbym3RK308U@rodycouto:6379).
-// 3. Configuração 'family: 0' no ioredis para resolver DNS interno de containers
-//    Docker/VLAN da Discloud (IPv4/IPv6) sem erro ENOTFOUND.
-// 4. Fallback automático para localhost ou memória caso executado fora da VLAN.
+// Gerenciador de Cache Redis Otimizado (Shove.io):
+// - Armazena no Redis APENAS informações dos usuários (shove:user:<id>) e
+//   metadados das salas criadas (shove:room:<id>).
+// - NÃO utiliza Redis Adapter no Socket.io durante as partidas: tudo o que
+//   acontece dentro da partida (física 30Hz, inputs, colisões, power-ups)
+//   roda 100% na memória RAM para garantir o menor ping possível!
 // ============================================================================
 
 const Redis = require('ioredis');
 const ENV = require('./env');
 
 let redisClient = null;
-let pubClient = null;
-let subClient = null;
 let isRedisConnected = false;
 
-/**
- * Tenta conectar a um endpoint Redis específico com timeout controlado.
- * @param {string|null} url URL completa (ex: redis://default:senha@rodycouto:6379)
- * @param {Object} options Opções do ioredis
- * @returns {Promise<Redis|null>}
- */
+const USER_TTL_SECONDS = 24 * 60 * 60; // 24h para usuários registrados
+const GUEST_TTL_SECONDS = 2 * 60 * 60; // 2h para convidados
+const ROOM_TTL_SECONDS = 2 * 60 * 60;  // 2h para salas criadas
+
 function tryConnectSingleRedis(url, options) {
   return new Promise((resolve) => {
     let settled = false;
@@ -54,11 +48,6 @@ function tryConnectSingleRedis(url, options) {
   });
 }
 
-/**
- * Inicializa a conexão com o Redis priorizando a rede privada VLAN da Discloud
- * (REDIS_URL / REDIS_HOST=rodycouto) e, se estiver rodando fora da Discloud no PC local,
- * tenta 127.0.0.1:6379 antes de ativar o Modo Memória Local.
- */
 async function connectRedis() {
   if (!ENV.REDIS_ENABLED) {
     console.log('[REDIS] Desativado via configuração (.env REDIS_ENABLED=false).');
@@ -67,10 +56,11 @@ async function connectRedis() {
 
   const commonOptions = {
     lazyConnect: true,
-    family: 0, // Essencial em containers Docker/VLAN na Discloud (aceita IPv4 e IPv6)
+    family: 0,
     connectTimeout: 4000,
-    maxRetriesPerRequest: null,
+    maxRetriesPerRequest: 1,
     enableReadyCheck: true,
+    enableOfflineQueue: false,
     retryStrategy(times) {
       if (times > 3) return null;
       return Math.min(times * 250, 1500);
@@ -78,7 +68,6 @@ async function connectRedis() {
   };
 
   try {
-    // 1ª Tentativa: Conexão Discloud via REDIS_URL ou REDIS_HOST configurado no .env
     const discloudOptions = {
       ...commonOptions,
       host: ENV.REDIS_HOST,
@@ -91,11 +80,7 @@ async function connectRedis() {
     console.log(`[REDIS] Tentando conectar ao Redis (${ENV.REDIS_HOST}:${ENV.REDIS_PORT})...`);
     let connectedMain = await tryConnectSingleRedis(ENV.REDIS_URL || null, discloudOptions);
 
-    // 2ª Tentativa (Fallback para quando o desenvolvedor testa no PC local fora da VLAN da Discloud)
     if (!connectedMain && ENV.REDIS_HOST !== '127.0.0.1' && ENV.REDIS_HOST !== 'localhost') {
-      console.warn(
-        `[REDIS] Host privado '${ENV.REDIS_HOST}' inacessível fora da VLAN da Discloud (verifique se VLAN=true está no discloud.config e no mesmo cluster). Tentando Redis local (127.0.0.1:6379)...`
-      );
       connectedMain = await tryConnectSingleRedis(null, {
         ...commonOptions,
         host: '127.0.0.1',
@@ -106,21 +91,13 @@ async function connectRedis() {
 
     if (!connectedMain) {
       isRedisConnected = false;
-      console.warn('[REDIS] Nenhum servidor Redis detectado. Operando em Modo Fallback Local (Memória).');
+      console.warn('[REDIS] Nenhum servidor Redis detectado. Operando 100% em Memória RAM.');
       return false;
     }
 
     redisClient = connectedMain;
-    pubClient = redisClient.duplicate();
-    subClient = redisClient.duplicate();
-
-    pubClient.on('error', () => {});
-    subClient.on('error', () => {});
-
-    await Promise.all([pubClient.connect(), subClient.connect()]);
-
     isRedisConnected = true;
-    console.log('[REDIS] Conectado ao servidor Redis 8.0 com sucesso (Pub/Sub pronto)!');
+    console.log('[REDIS] Conectado! Salvando apenas Usuários e Salas Criadas (Partidas 100% em RAM).');
 
     redisClient.on('error', (err) => {
       console.warn('[REDIS Runtime Error]:', err.message);
@@ -133,17 +110,105 @@ async function connectRedis() {
     return true;
   } catch (err) {
     isRedisConnected = false;
-    console.warn('[REDIS] Falha ao inicializar clientes Redis:', err.message);
+    console.warn('[REDIS] Falha ao inicializar cliente Redis:', err.message);
     return false;
   }
 }
 
 function getRedisStatus() {
-  return isRedisConnected;
+  return Boolean(isRedisConnected && redisClient && redisClient.status === 'ready');
 }
 
 function getClients() {
-  return { redisClient, pubClient, subClient };
+  return { redisClient, pubClient: null, subClient: null };
 }
 
-module.exports = { connectRedis, getRedisStatus, getClients };
+/**
+ * Salva informações do usuário no Redis de forma assíncrona (não bloqueante).
+ */
+async function cacheUserInRedis(userObj) {
+  if (!getRedisStatus() || !userObj || !userObj.id) return;
+  try {
+    const ttl = userObj.isGuest ? GUEST_TTL_SECONDS : USER_TTL_SECONDS;
+    const payload = JSON.stringify({
+      id: String(userObj.id),
+      username: userObj.username,
+      skinColor: userObj.skinColor || '#FF3366',
+      stats: userObj.stats || { wins: 0, shoves: 0, kills: 0, matches: 0, xp: 0, level: 1 },
+      friends: Array.isArray(userObj.friends) ? userObj.friends : [],
+      friendRequests: Array.isArray(userObj.friendRequests) ? userObj.friendRequests : [],
+      isGuest: Boolean(userObj.isGuest)
+    });
+
+    const pipeline = redisClient.pipeline();
+    pipeline.set(`shove:user:${userObj.id}`, payload, 'EX', ttl);
+    if (userObj.username) {
+      pipeline.set(
+        `shove:username:${String(userObj.username).trim().toLowerCase()}`,
+        String(userObj.id),
+        'EX',
+        ttl
+      );
+    }
+    await pipeline.exec();
+  } catch (_) {}
+}
+
+/**
+ * Busca informações de um usuário no Redis pelo ID.
+ */
+async function getCachedUserFromRedis(userId) {
+  if (!getRedisStatus() || !userId) return null;
+  try {
+    const raw = await redisClient.get(`shove:user:${userId}`);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Busca o ID de um usuário no Redis pelo nickname (case-insensitive).
+ */
+async function getCachedUserIdByUsername(username) {
+  if (!getRedisStatus() || !username) return null;
+  try {
+    const clean = String(username).trim().toLowerCase();
+    return await redisClient.get(`shove:username:${clean}`);
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Salva apenas os metadados da sala criada no Redis (sem dados de física da partida).
+ */
+async function cacheRoomInRedis(roomMeta) {
+  if (!getRedisStatus() || !roomMeta || !roomMeta.id) return;
+  try {
+    const payload = JSON.stringify(roomMeta);
+    await redisClient.set(`shove:room:${roomMeta.id}`, payload, 'EX', ROOM_TTL_SECONDS);
+  } catch (_) {}
+}
+
+/**
+ * Remove a sala do Redis quando ela é encerrada/excluída da memória.
+ */
+async function deleteRoomFromRedis(roomId) {
+  if (!getRedisStatus() || !roomId) return;
+  try {
+    await redisClient.del(`shove:room:${roomId}`);
+  } catch (_) {}
+}
+
+module.exports = {
+  connectRedis,
+  getRedisStatus,
+  getClients,
+  cacheUserInRedis,
+  getCachedUserFromRedis,
+  getCachedUserIdByUsername,
+  cacheRoomInRedis,
+  deleteRoomFromRedis
+};

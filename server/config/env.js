@@ -1,7 +1,8 @@
 // server/config/env.js
 // ============================================================================
 // Módulo responsável por carregar e validar as variáveis de ambiente (.env).
-// Inclui suporte completo às credenciais do Redis 8.0 na rede VLAN da Discloud.
+// Inclui suporte completo às credenciais do Redis 8.0 na rede VLAN da Discloud
+// sem expor credenciais sensíveis hardcoded no código-fonte.
 // ============================================================================
 
 const path = require('path');
@@ -28,8 +29,8 @@ const ENV = {
 
   // Redis 8.0 (Discloud VLAN / Local Fallback)
   REDIS_ENABLED: process.env.REDIS_ENABLED !== 'false',
-  REDIS_URL: process.env.REDIS_URL || 'redis://default:Hsbym3RK308U@rodycouto:6379',
-  REDIS_HOST: process.env.REDIS_HOST || 'rodycouto',
+  REDIS_URL: process.env.REDIS_URL || '',
+  REDIS_HOST: process.env.REDIS_HOST || '127.0.0.1',
   REDIS_PORT: Number(process.env.REDIS_PORT) || 6379,
   REDIS_USERNAME: process.env.REDIS_USERNAME || 'default',
   REDIS_PASSWORD: process.env.REDIS_PASSWORD || undefined,

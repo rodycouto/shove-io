@@ -18,7 +18,8 @@
         "innerHoleRadius": 0,
         "shrinkRate": 0,
         "minRadius": 12.0,
-        "pillars": []
+        "pillars": [],
+        "trampolines": []
       }
     },
     {
@@ -39,7 +40,8 @@
         "innerHoleRadius": 0,
         "shrinkRate": 0,
         "minRadius": 12.5,
-        "pillars": []
+        "pillars": [],
+        "trampolines": []
       }
     },
     {
@@ -60,7 +62,8 @@
         "innerHoleRadius": 0,
         "shrinkRate": 0.12,
         "minRadius": 5.5,
-        "pillars": []
+        "pillars": [],
+        "trampolines": []
       }
     },
     {
@@ -81,7 +84,8 @@
         "innerHoleRadius": 3.8,
         "shrinkRate": 0,
         "minRadius": 13.0,
-        "pillars": []
+        "pillars": [],
+        "trampolines": []
       }
     },
     {
@@ -103,11 +107,110 @@
         "shrinkRate": 0,
         "minRadius": 12.5,
         "pillars": [
-          { "x": 4.5, "z": 4.5, "radius": 1.1, "bounciness": 1.3 },
-          { "x": -4.5, "z": 4.5, "radius": 1.1, "bounciness": 1.3 },
-          { "x": 4.5, "z": -4.5, "radius": 1.1, "bounciness": 1.3 },
-          { "x": -4.5, "z": -4.5, "radius": 1.1, "bounciness": 1.3 }
+          {
+            "x": 4.5,
+            "z": 4.5,
+            "radius": 1.1,
+            "bounciness": 1.3
+          },
+          {
+            "x": -4.5,
+            "z": 4.5,
+            "radius": 1.1,
+            "bounciness": 1.3
+          },
+          {
+            "x": 4.5,
+            "z": -4.5,
+            "radius": 1.1,
+            "bounciness": 1.3
+          },
+          {
+            "x": -4.5,
+            "z": -4.5,
+            "radius": 1.1,
+            "bounciness": 1.3
+          }
+        ],
+        "trampolines": []
+      }
+    },
+    {
+      "id": "map_bouncy_circus",
+      "name": "Circo Saltitante",
+      "description": "Use os 5 trampolins elásticos para saltar alto e fugir dos inimigos!",
+      "theme": {
+        "background": "#0d061a",
+        "platformColor": "#2b1654",
+        "borderColor": "#ff007f",
+        "centerColor": "#ffd600"
+      },
+      "physics": {
+        "radius": 13.0,
+        "sides": 16,
+        "friction": 0.88,
+        "moveSpeed": 19.0,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0,
+        "minRadius": 13.0,
+        "pillars": [],
+        "trampolines": [
+          {
+            "x": 0.0,
+            "z": 0.0,
+            "radius": 1.45,
+            "jumpForce": 15.5
+          },
+          {
+            "x": 5.3,
+            "z": 5.3,
+            "radius": 1.25,
+            "jumpForce": 14.5
+          },
+          {
+            "x": -5.3,
+            "z": 5.3,
+            "radius": 1.25,
+            "jumpForce": 14.5
+          },
+          {
+            "x": 5.3,
+            "z": -5.3,
+            "radius": 1.25,
+            "jumpForce": 14.5
+          },
+          {
+            "x": -5.3,
+            "z": -5.3,
+            "radius": 1.25,
+            "jumpForce": 14.5
+          }
         ]
+      }
+    },
+    {
+      "id": "map_sparkling_moon",
+      "name": "Lua Cintilante",
+      "description": "Gravidade mais leve: os saltos são mais altos e os movimentos são mais lentos!",
+      "theme": {
+        "background": "#040714",
+        "platformColor": "#475569",
+        "borderColor": "#38bdf8",
+        "centerColor": "#e0f2fe"
+      },
+      "physics": {
+        "radius": 13.0,
+        "sides": 20,
+        "friction": 0.9,
+        "moveSpeed": 12.8,
+        "gravity": 8.2,
+        "jumpForce": 10.6,
+        "lowGravity": true,
+        "innerHoleRadius": 0,
+        "shrinkRate": 0,
+        "minRadius": 13.0,
+        "pillars": [],
+        "trampolines": []
       }
     }
   ]

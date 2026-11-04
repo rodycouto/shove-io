@@ -1,12 +1,8 @@
 // client/js/scenes/LobbyBackgroundScene.js
 // ============================================================================
-// Cena 3D animada de fundo para a tela de Login e Lobby (Three.js).
-// Simula uma partida real na arena de fundo:
-// - Colisão física sólida com o piso da plataforma (impede que os bonecos
-//   atravessem o chão ao pular, levar empurrão ou renascer).
-// - IA de combate ativo: os bonecos perseguem adversários, desviam da borda,
-//   carregam a força nas mãos, aplicam Shoves com onda de choque 3D e colidem
-//   fisicamente uns com os outros.
+// Cena 3D animada de fundo para a tela de Login e Lobby (Three.js - v2.0).
+// Personagens redesenhados com geometria Low-Poly Arcade ultra-leve (redução de
+// mais de 78% nos polígonos por boneco) e Object Pooling de ondas de choque.
 // ============================================================================
 
 import * as THREE from '/vendor/three/three.module.js';
@@ -15,22 +11,42 @@ export class LobbyBackgroundScene {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
     this.bots = [];
-    this.shockwaves = [];
+    this.shockwavePool = [];
+    this.activeShockwaves = [];
     this.clock = new THREE.Clock();
     this.cameraAngle = 0;
     this.isPaused = false;
 
+    this.initSharedGeometries();
     this.initScene();
     this.createLights();
     this.createArenaPlatform();
+    this.initShockwavePool(10);
     this.spawnDemoShovers();
     this.bindResize();
     this.animate();
   }
 
   /**
-   * Pausa ou retoma a animação de fundo para economizar GPU durante a partida.
+   * Geometrias Low-Poly facetadas de baixíssimo custo para aliviar o processamento.
    */
+  initSharedGeometries() {
+    const ringGeo = new THREE.RingGeometry(0.45, 0.85, 16);
+    ringGeo.rotateX(-Math.PI / 2);
+
+    this.sharedGeos = {
+      torso: new THREE.CylinderGeometry(0.46, 0.56, 0.92, 8),
+      head: new THREE.CylinderGeometry(0.38, 0.46, 0.34, 8),
+      visor: new THREE.BoxGeometry(0.62, 0.22, 0.24),
+      hand: new THREE.IcosahedronGeometry(0.22, 0),
+      shockwaveRing: ringGeo
+    };
+
+    this.sharedVisorMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff
+    });
+  }
+
   setPaused(paused) {
     this.isPaused = Boolean(paused);
     if (!this.isPaused) {
@@ -47,58 +63,44 @@ export class LobbyBackgroundScene {
       50,
       window.innerWidth / window.innerHeight,
       0.1,
-      200
+      180
     );
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
-      antialias: true,
+      antialias: false,
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    // Limita o pixelRatio em 2 para não sobrecarregar celulares Retina (iOS/Android)
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.shadowMap.enabled = false;
 
-    // Grupo para efeitos visuais de ondas de choque dos empurrões no lobby
     this.fxGroup = new THREE.Group();
     this.scene.add(this.fxGroup);
   }
 
   createLights() {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+    const ambient = new THREE.AmbientLight(0xffffff, 0.85);
     this.scene.add(ambient);
 
-    const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.35);
+    const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.25);
     dirLight.position.set(14, 24, 12);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 1024;
-    dirLight.shadow.mapSize.height = 1024;
     this.scene.add(dirLight);
-
-    const rimLight = new THREE.PointLight(0x00e5ff, 2, 35);
-    rimLight.position.set(-12, 6, -10);
-    this.scene.add(rimLight);
   }
 
   createArenaPlatform() {
     this.arenaGroup = new THREE.Group();
 
-    // Base principal cilíndrica/dodecagonal
-    const platformGeo = new THREE.CylinderGeometry(11, 9.2, 2.4, 16);
-    const platformMat = new THREE.MeshStandardMaterial({
+    const platformGeo = new THREE.CylinderGeometry(11, 9.2, 2.4, 12);
+    const platformMat = new THREE.MeshLambertMaterial({
       color: 0x232946,
-      roughness: 0.4,
-      metalness: 0.1
+      flatShading: true
     });
     const platform = new THREE.Mesh(platformGeo, platformMat);
     platform.position.y = -1.2;
-    platform.receiveShadow = true;
     this.arenaGroup.add(platform);
 
-    // Borda neon de aviso de queda
-    const ringGeo = new THREE.RingGeometry(10.3, 10.95, 32);
+    const ringGeo = new THREE.RingGeometry(10.3, 10.95, 24);
     ringGeo.rotateX(-Math.PI / 2);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xff3366,
@@ -108,8 +110,7 @@ export class LobbyBackgroundScene {
     ring.position.y = 0.02;
     this.arenaGroup.add(ring);
 
-    // Círculo central
-    const centerGeo = new THREE.RingGeometry(2.6, 3.0, 24);
+    const centerGeo = new THREE.RingGeometry(2.6, 3.0, 20);
     centerGeo.rotateX(-Math.PI / 2);
     const centerMat = new THREE.MeshBasicMaterial({
       color: 0x00e5ff,
@@ -122,36 +123,57 @@ export class LobbyBackgroundScene {
     this.scene.add(this.arenaGroup);
   }
 
+  initShockwavePool(size = 10) {
+    for (let i = 0; i < size; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x00e5ff,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(this.sharedGeos.shockwaveRing, mat);
+      mesh.visible = false;
+      this.fxGroup.add(mesh);
+      this.shockwavePool.push({
+        mesh,
+        mat,
+        scale: 1,
+        maxScale: 3,
+        inUse: false
+      });
+    }
+  }
+
+  /**
+   * Cria o novo personagem Low-Poly Arcade Brawler (muito mais leve para a GPU).
+   */
   createShoverMesh(colorHex) {
     const group = new THREE.Group();
 
-    // Corpo estilo cápsula/feijão (Bean)
-    const bodyGeo = new THREE.CapsuleGeometry(0.65, 0.7, 8, 16);
-    const bodyMat = new THREE.MeshStandardMaterial({
+    const bodyMat = new THREE.MeshLambertMaterial({
       color: new THREE.Color(colorHex),
-      roughness: 0.3
+      flatShading: true
     });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = 1.0;
-    body.castShadow = true;
+
+    const body = new THREE.Group();
+    const torso = new THREE.Mesh(this.sharedGeos.torso, bodyMat);
+    torso.position.y = 0.56;
+    body.add(torso);
+
+    const head = new THREE.Mesh(this.sharedGeos.head, bodyMat);
+    head.position.y = 1.18;
+    body.add(head);
+
+    const visor = new THREE.Mesh(this.sharedGeos.visor, this.sharedVisorMat);
+    visor.position.set(0, 1.18, 0.36);
+    body.add(visor);
+
     group.add(body);
 
-    // Visor/Olhos estilo arcade
-    const visorGeo = new THREE.BoxGeometry(0.75, 0.28, 0.35);
-    const visorMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.1
-    });
-    const visor = new THREE.Mesh(visorGeo, visorMat);
-    visor.position.set(0, 1.25, 0.5);
-    group.add(visor);
-
-    // Mãos flutuantes de empurrão
-    const handGeo = new THREE.SphereGeometry(0.24, 12, 12);
-    const leftHand = new THREE.Mesh(handGeo, bodyMat);
-    leftHand.position.set(-0.78, 0.95, 0.3);
-    const rightHand = new THREE.Mesh(handGeo, bodyMat);
-    rightHand.position.set(0.78, 0.95, 0.3);
+    const leftHand = new THREE.Mesh(this.sharedGeos.hand, bodyMat);
+    leftHand.position.set(-0.72, 0.85, 0.3);
+    const rightHand = new THREE.Mesh(this.sharedGeos.hand, bodyMat);
+    rightHand.position.set(0.72, 0.85, 0.3);
     group.add(leftHand, rightHand);
 
     return { group, body, bodyMat, leftHand, rightHand };
@@ -176,9 +198,9 @@ export class LobbyBackgroundScene {
 
       this.bots.push({
         ...shover,
-        isHero: index === 0, // Reflete a cor escolhida pelo jogador no login
+        isHero: index === 0,
         velocity: new THREE.Vector3(0, 0, 0),
-        isFallingOff: false, // Controla se o boneco já passou da borda da arena
+        isFallingOff: false,
         chargePower: 0,
         isCharging: false,
         shoveCooldown: 0.4 + Math.random() * 1.0,
@@ -189,65 +211,55 @@ export class LobbyBackgroundScene {
     });
   }
 
-  /**
-   * Atualiza a cor do boneco principal quando o usuário escolhe uma cor no Login.
-   */
   setHeroColor(colorHex) {
     if (this.bots.length > 0) {
       this.bots[0].bodyMat.color.set(colorHex);
     }
   }
 
-  /**
-   * Cria o efeito de onda de choque 3D quando um bot empurra outro na demonstração.
-   */
   spawnDemoShockwave(x, z, power = 0.7) {
-    const ringGeo = new THREE.RingGeometry(0.45, 0.85, 24);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: power > 0.8 ? 0xff3366 : 0x00e5ff,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide
-    });
-    const mesh = new THREE.Mesh(ringGeo, ringMat);
-    mesh.position.set(x, 0.12, z);
-    this.fxGroup.add(mesh);
+    let item = null;
+    for (let i = 0; i < this.shockwavePool.length; i++) {
+      if (!this.shockwavePool[i].inUse) {
+        item = this.shockwavePool[i];
+        break;
+      }
+    }
+    if (!item) return;
 
-    this.shockwaves.push({
-      mesh,
-      mat: ringMat,
-      scale: 1,
-      maxScale: 2.5 + power * 1.5
-    });
+    item.inUse = true;
+    item.scale = 1;
+    item.maxScale = 2.5 + power * 1.5;
+    item.mat.color.setHex(power > 0.8 ? 0xff3366 : 0x00e5ff);
+    item.mat.opacity = 0.85;
+    item.mesh.position.set(x, 0.12, z);
+    item.mesh.scale.setScalar(1);
+    item.mesh.visible = true;
+
+    this.activeShockwaves.push(item);
   }
 
-  /**
-   * Atualiza a inteligência artificial, física de plataforma e luta entre os bots.
-   */
   updateBots(dt) {
     const ARENA_RADIUS = 10.55;
+    const ARENA_RADIUS_SQ = ARENA_RADIUS * ARENA_RADIUS;
     const GRAVITY_ON_ARENA = 22.0;
     const GRAVITY_FALLING = 28.0;
+    const horizontalDamping = Math.pow(0.89, dt * 60);
 
-    // 1. Movimentação individual, IA de combate e colisão com o piso da plataforma
     for (let i = 0; i < this.bots.length; i++) {
       const bot = this.bots[i];
       const pos = bot.group.position;
-      const distFromCenter = Math.hypot(pos.x, pos.z);
+      const distFromCenterSq = pos.x * pos.x + pos.z * pos.z;
 
-      // Verifica se o boneco saiu do raio da plataforma
-      if (distFromCenter > ARENA_RADIUS) {
+      if (distFromCenterSq > ARENA_RADIUS_SQ) {
         bot.isFallingOff = true;
       }
 
-      // Se já caiu para fora da borda da plataforma, aplica gravidade de abismo até renascer
       if (bot.isFallingOff) {
         bot.velocity.y -= GRAVITY_FALLING * dt;
         pos.addScaledVector(bot.velocity, dt);
         bot.group.rotation.x += dt * 4.0;
 
-        // Quando cai fundo no abismo, renasce caindo suavemente no centro da plataforma
         if (pos.y < -14) {
           const spawnAngle = Math.random() * Math.PI * 2;
           const spawnR = 1.5 + Math.random() * 3.5;
@@ -261,7 +273,6 @@ export class LobbyBackgroundScene {
         continue;
       }
 
-      // --- BONECO ESTÁ DENTRO DO RAIO DA PLATAFORMA ---
       bot.shoveCooldown = Math.max(0, bot.shoveCooldown - dt);
       bot.strafeTimer -= dt;
       if (bot.strafeTimer <= 0) {
@@ -269,16 +280,17 @@ export class LobbyBackgroundScene {
         bot.strafeTimer = 1.2 + Math.random() * 1.8;
       }
 
-      // Procura o adversário mais próximo que também esteja na plataforma
       let nearest = null;
-      let minDist = Infinity;
+      let minDistSq = Infinity;
       for (let j = 0; j < this.bots.length; j++) {
         if (i === j) continue;
         const other = this.bots[j];
         if (other.isFallingOff || other.group.position.y > 2.5) continue;
-        const d = Math.hypot(other.group.position.x - pos.x, other.group.position.z - pos.z);
-        if (d < minDist) {
-          minDist = d;
+        const dx = other.group.position.x - pos.x;
+        const dz = other.group.position.z - pos.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
           nearest = other;
         }
       }
@@ -287,38 +299,32 @@ export class LobbyBackgroundScene {
       let moveZ = 0;
 
       if (nearest) {
+        const minDist = Math.sqrt(minDistSq);
         const dx = nearest.group.position.x - pos.x;
         const dz = nearest.group.position.z - pos.z;
-        const len = Math.hypot(dx, dz) || 1;
+        const len = minDist || 1;
         const dirX = dx / len;
         const dirZ = dz / len;
 
-        // Combina perseguição frontal com leve movimentação lateral (strafe) de combate
         const perpX = -dirZ * bot.strafeDir * 0.35;
         const perpZ = dirX * bot.strafeDir * 0.35;
         moveX = dirX + perpX;
         moveZ = dirZ + perpZ;
 
-        // Olha suavemente na direção do oponente
-        const targetAngle = Math.atan2(dirX, dirZ);
-        bot.group.rotation.y = targetAngle;
+        bot.group.rotation.y = Math.atan2(dirX, dirZ);
 
-        // Quando se aproxima, começa a carregar o empurrão (Shove)
         if (minDist < 3.4 && bot.shoveCooldown <= 0) {
           bot.isCharging = true;
           bot.chargePower = Math.min(1.0, bot.chargePower + dt * 1.3);
 
-          // Se chegou perto o bastante ou carregou bastante força, dispara o SHOVE!
           if (minDist < 1.75 || bot.chargePower >= 0.85) {
             const power = Math.max(0.5, bot.chargePower);
             const shoveForce = 13 + power * 9;
 
-            // Impulso no alvo empurrado
             nearest.velocity.x = dirX * shoveForce;
             nearest.velocity.z = dirZ * shoveForce;
             nearest.velocity.y = 3.8 + power * 1.8;
 
-            // Pequeno avanço de ataque seguido de recuo natural
             bot.velocity.x = -dirX * 3.2;
             bot.velocity.z = -dirZ * 3.2;
 
@@ -334,17 +340,18 @@ export class LobbyBackgroundScene {
         }
       }
 
-      // Instinto de sobrevivência: se estiver perto da borda vermelha, faz força para voltar ao centro!
-      if (distFromCenter > ARENA_RADIUS * 0.72 && distFromCenter > 0.01) {
-        const urgency = (distFromCenter - ARENA_RADIUS * 0.72) / (ARENA_RADIUS * 0.28);
+      const safeZoneRadius = ARENA_RADIUS * 0.72;
+      if (distFromCenterSq > safeZoneRadius * safeZoneRadius && distFromCenterSq > 0.0001) {
+        const distFromCenter = Math.sqrt(distFromCenterSq);
+        const urgency = (distFromCenter - safeZoneRadius) / (ARENA_RADIUS * 0.28);
         const pullStrength = 1.6 + urgency * 1.8;
         moveX += (-pos.x / distFromCenter) * pullStrength;
         moveZ += (-pos.z / distFromCenter) * pullStrength;
       }
 
-      // Normaliza a direção desejada e aplica aceleração
-      const moveLen = Math.hypot(moveX, moveZ);
-      if (moveLen > 1) {
+      const moveLenSq = moveX * moveX + moveZ * moveZ;
+      if (moveLenSq > 1) {
+        const moveLen = Math.sqrt(moveLenSq);
         moveX /= moveLen;
         moveZ /= moveLen;
       }
@@ -354,15 +361,12 @@ export class LobbyBackgroundScene {
       bot.velocity.x += moveX * accel * dt;
       bot.velocity.z += moveZ * accel * dt;
 
-      // Atrito horizontal da plataforma
-      bot.velocity.x *= 0.89;
-      bot.velocity.z *= 0.89;
+      bot.velocity.x *= horizontalDamping;
+      bot.velocity.z *= horizontalDamping;
 
-      // Gravidade vertical e integração de posição
       bot.velocity.y -= GRAVITY_ON_ARENA * dt;
       pos.addScaledVector(bot.velocity, dt);
 
-      // COLISÃO SÓLIDA COM O PISO DA PLATAFORMA (Impede passar direto pelo chão!)
       if (pos.y <= 0) {
         pos.y = 0;
         if (bot.velocity.y < 0) {
@@ -370,21 +374,21 @@ export class LobbyBackgroundScene {
         }
       }
 
-      // Pulinho animado de caminhada no corpo (sem alterar pos.y físico abaixo de zero)
       bot.hopPhase += dt * 11;
-      const walkBounce = pos.y === 0 ? Math.abs(Math.sin(bot.hopPhase)) * 0.16 : 0;
-      bot.body.position.y = 1.0 + walkBounce;
+      const walkBounce = pos.y === 0 ? Math.abs(Math.sin(bot.hopPhase)) * 0.14 : 0;
+      bot.body.position.y = walkBounce;
 
-      // Animação das mãos carregando força do Shove
       const chargeOffset = bot.chargePower * 0.32;
-      bot.leftHand.position.set(-0.78, 0.95 + walkBounce, 0.3 - chargeOffset);
-      bot.rightHand.position.set(0.78, 0.95 + walkBounce, 0.3 - chargeOffset);
+      bot.leftHand.position.set(-0.72, 0.85 + walkBounce, 0.3 - chargeOffset);
+      bot.rightHand.position.set(0.72, 0.85 + walkBounce, 0.3 - chargeOffset);
       const handScale = 1 + bot.chargePower * 0.45;
       bot.leftHand.scale.setScalar(handScale);
       bot.rightHand.scale.setScalar(handScale);
     }
 
-    // 2. Colisão física corpo a corpo entre os bonecos na plataforma (não deixa atravessar um ao outro)
+    const MIN_DIST = 1.32;
+    const MIN_DIST_SQ = MIN_DIST * MIN_DIST;
+
     for (let i = 0; i < this.bots.length; i++) {
       const b1 = this.bots[i];
       if (b1.isFallingOff || b1.group.position.y > 2.0) continue;
@@ -395,20 +399,19 @@ export class LobbyBackgroundScene {
 
         const dx = b2.group.position.x - b1.group.position.x;
         const dz = b2.group.position.z - b1.group.position.z;
-        const dist = Math.hypot(dx, dz);
-        const minDist = 1.32;
+        const distSq = dx * dx + dz * dz;
 
-        if (dist < minDist && dist > 0.001) {
+        if (distSq < MIN_DIST_SQ && distSq > 0.000001) {
+          const dist = Math.sqrt(distSq);
           const nx = dx / dist;
           const nz = dz / dist;
-          const overlap = (minDist - dist) * 0.5;
+          const overlap = (MIN_DIST - dist) * 0.5;
 
           b1.group.position.x -= nx * overlap;
           b1.group.position.z -= nz * overlap;
           b2.group.position.x += nx * overlap;
           b2.group.position.z += nz * overlap;
 
-          // Encontrão elástico de luta
           const bump = 4.2;
           b1.velocity.x -= nx * bump;
           b1.velocity.z -= nz * bump;
@@ -418,15 +421,15 @@ export class LobbyBackgroundScene {
       }
     }
 
-    // 3. Atualiza as ondas de choque 3D dos empurrões
-    for (let i = this.shockwaves.length - 1; i >= 0; i--) {
-      const sw = this.shockwaves[i];
+    for (let i = this.activeShockwaves.length - 1; i >= 0; i--) {
+      const sw = this.activeShockwaves[i];
       sw.scale += dt * 9.5;
       sw.mesh.scale.setScalar(sw.scale);
       sw.mat.opacity = Math.max(0, 1 - sw.scale / sw.maxScale);
       if (sw.scale >= sw.maxScale) {
-        this.fxGroup.remove(sw.mesh);
-        this.shockwaves.splice(i, 1);
+        sw.mesh.visible = false;
+        sw.inUse = false;
+        this.activeShockwaves.splice(i, 1);
       }
     }
   }
@@ -450,7 +453,6 @@ export class LobbyBackgroundScene {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     this.updateBots(dt);
 
-    // Câmera orbitando suavemente ao redor da arena
     this.cameraAngle += dt * 0.22;
     const camRadius = 22;
     this.camera.position.x = Math.cos(this.cameraAngle) * camRadius;

@@ -1,20 +1,20 @@
 // client/js/ui/LoginScreen.js
 // ============================================================================
-// Controlador Principal de UI:
-// - Detecção de Celular/Touch para ocultar a aba de escolher teclas de PC
-// - Configuração da Sala exibida SEMPRE AO LADO do menu principal (PC e Mobile)
-// - Lista de Amigos com Status Online/Offline em tempo real e botão Convidar
-// - Ping em tempo real no canto superior esquerdo
-// - Sistema de Níveis, Barra de XP e Contagem de Vitórias, Partidas e Shoves
-// - Lista Pública de Salas Criadas, Solicitações de Entrada e Expulsão (Kick)
-// - Número de Rounds (Default: 3, Máx: 10) e Seleção de 1 ou mais Mapas
-// - Apresentação do Mapa + Contagem Grande 5, 4, 3, 2, 1 - SHOVE!
+// Controlador Principal de UI (v2.0):
+// - Ícones oficiais do Lucide (https://lucide.dev/icons/) substituindo todos os emojis
+// - Quantidade de Jogadores Online ao lado do Ping na tela inicial
+// - Sistema de Amigos com verificação real no banco de dados e aprovação de convite
+// - Nível do personagem (Nv. X) ao lado do nome na sala, nos amigos e na vitória
+// - Suporte ao novo mapa Circo Saltitante (5 trampolins) e Luva de Boxe (KO 2s)
+// - Remoção de velocidade/modo de jogo do HUD da partida e kill feed oculto no celular
+// - Swipe horizontal no celular para acessar a Configuração da Sala
 // ============================================================================
 
 import { LobbyBackgroundScene } from '../scenes/LobbyBackgroundScene.js';
 import { GameScene } from '../scenes/GameScene.js';
 import { ControlsConfig } from '../config/ControlsConfig.js';
 import { SoundManager } from '../audio/SoundManager.js';
+import { lucideIcon } from './LucideIcons.js';
 
 class LoginScreenController {
   constructor() {
@@ -22,13 +22,25 @@ class LoginScreenController {
     this.currentUser = null;
     this.token = null;
     this.currentRoom = null;
-    this.friendsList = [];
-    this.pendingInviteRoomId = null;
     this.listeningControlAction = null;
 
     this.pendingUrlRoomId = this.extractRoomIdFromUrl();
 
-    this.socket = window.io();
+    this.hudCache = {
+      roundKey: '',
+      timeRemaining: -1,
+      powerupKey: '',
+      aliveCount: -1,
+      isGrabbed: false,
+      escapePresses: -1
+    };
+
+    this.socket = window.io({
+      transports: ['websocket', 'polling'],
+      upgrade: true,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 2000
+    });
     this.soundManager = new SoundManager();
     this.controlsConfig = new ControlsConfig();
     this.bgScene = new LobbyBackgroundScene('bg-canvas');
@@ -39,13 +51,15 @@ class LoginScreenController {
       this.soundManager
     );
 
-    this.detectMobileEnvironment();
     this.cacheDOM();
+    this.initStaticIcons();
     this.startPingMonitor();
     this.bindAuthEvents();
     this.bindLobbyEvents();
     this.bindFriendsEvents();
+    this.initRoomChatDOM();
     this.bindRoomConfigWindowEvents();
+    this.bindRoomChatEvents();
     this.bindSettingsEvents();
     this.bindSocketEvents();
     this.renderControlLabels();
@@ -53,19 +67,248 @@ class LoginScreenController {
     this.restoreSession();
   }
 
-  /**
-   * Detecta se o usuário está jogando pelo celular/tablet para ocultar
-   * a aba de escolher teclas de teclado/mouse do computador.
-   */
-  detectMobileEnvironment() {
-    const isCoarsePointer = window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-    const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-      navigator.userAgent || ''
-    );
-    this.isMobile = Boolean(isCoarsePointer || isMobileUA);
-    if (this.isMobile) {
-      document.body.classList.add('is-mobile-device');
+  initRoomChatDOM() {
+    this.roomChatWidget = document.getElementById('room-chat-widget');
+    this.roomChatHeader = document.getElementById('room-chat-header');
+    this.roomChatTitle = document.getElementById('room-chat-title');
+    this.roomChatUnreadBadge = document.getElementById('room-chat-unread-badge');
+    this.btnToggleRoomChat = document.getElementById('btn-toggle-room-chat');
+    this.roomChatMessages = document.getElementById('room-chat-messages');
+    this.roomChatForm = document.getElementById('room-chat-form');
+    this.roomChatInput = document.getElementById('room-chat-input');
+    this.roomChatCharCount = document.getElementById('room-chat-char-count');
+    this.activeChatRoomId = null;
+    this.renderedChatMessageIds = new Set();
+    this.unreadChatCount = 0;
+  }
+
+  bindRoomChatEvents() {
+    if (!this.roomChatWidget) return;
+
+    const toggleMinimize = () => {
+      const isMin = this.roomChatWidget.classList.toggle('minimized');
+      if (this.btnToggleRoomChat) {
+        this.btnToggleRoomChat.innerHTML = isMin
+          ? lucideIcon('chevron-up', 15)
+          : lucideIcon('chevron-down', 15);
+      }
+      if (!isMin) {
+        this.unreadChatCount = 0;
+        if (this.roomChatUnreadBadge) {
+          this.roomChatUnreadBadge.classList.add('hidden');
+        }
+        if (this.roomChatMessages) {
+          this.roomChatMessages.scrollTop = this.roomChatMessages.scrollHeight;
+        }
+      }
+    };
+
+    if (this.roomChatHeader) {
+      this.roomChatHeader.addEventListener('click', (e) => {
+        if (e.target.closest('#btn-toggle-room-chat')) return;
+        toggleMinimize();
+      });
     }
+
+    if (this.btnToggleRoomChat) {
+      this.btnToggleRoomChat.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleMinimize();
+      });
+    }
+
+    if (this.roomChatInput) {
+      this.roomChatInput.addEventListener('input', () => {
+        if (this.roomChatInput.value.length > 100) {
+          this.roomChatInput.value = this.roomChatInput.value.substring(0, 100);
+        }
+        if (this.roomChatCharCount) {
+          this.roomChatCharCount.textContent = `${this.roomChatInput.value.length}/100`;
+        }
+      });
+
+      this.roomChatInput.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+      });
+    }
+
+    if (this.roomChatForm) {
+      this.roomChatForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        if (!this.currentRoom || !this.roomChatInput) return;
+
+        const rawText = this.roomChatInput.value.trim().substring(0, 100);
+        if (!rawText) return;
+
+        this.socket.emit('room:chat_send', { text: rawText }, (res) => {
+          if (res?.error) {
+            this.showLobbyFeedback(res.error, 'error');
+          }
+        });
+
+        this.roomChatInput.value = '';
+        if (this.roomChatCharCount) {
+          this.roomChatCharCount.textContent = '0/100';
+        }
+      });
+    }
+  }
+
+  syncRoomChatFromRoom(room, inMatch = false) {
+    if (!this.roomChatWidget || !room || !room.id) return;
+
+    this.roomChatWidget.classList.remove('hidden');
+    this.roomChatWidget.classList.toggle('in-match-mode', Boolean(inMatch));
+
+    if (this.roomChatTitle) {
+      this.roomChatTitle.textContent = `CHAT DA SALA #${room.id}`;
+    }
+
+    if (this.isMobileDevice() && (inMatch || this.activeChatRoomId !== room.id)) {
+      this.roomChatWidget.classList.add('minimized');
+      if (this.btnToggleRoomChat) {
+        this.btnToggleRoomChat.innerHTML = lucideIcon('chevron-up', 15);
+      }
+    }
+
+    const history = Array.isArray(room.chatHistory) ? room.chatHistory : [];
+
+    if (this.activeChatRoomId !== room.id) {
+      this.activeChatRoomId = room.id;
+      this.renderedChatMessageIds.clear();
+      this.unreadChatCount = 0;
+      if (this.roomChatUnreadBadge) {
+        this.roomChatUnreadBadge.classList.add('hidden');
+      }
+      if (this.roomChatMessages) {
+        this.roomChatMessages.innerHTML = '';
+        if (history.length === 0) {
+          this.roomChatMessages.innerHTML =
+            '<div class="room-chat-empty">Histórico temporário da sala (máx. 100 caracteres por mensagem).</div>';
+        }
+      }
+    }
+
+    history.forEach((msg) => {
+      if (!this.renderedChatMessageIds.has(msg.id)) {
+        this.appendChatMessageToDOM(msg, false);
+      }
+    });
+  }
+
+  hideAndClearRoomChat() {
+    this.activeChatRoomId = null;
+    if (this.renderedChatMessageIds) {
+      this.renderedChatMessageIds.clear();
+    }
+    this.unreadChatCount = 0;
+    if (this.roomChatUnreadBadge) {
+      this.roomChatUnreadBadge.classList.add('hidden');
+    }
+    if (this.roomChatMessages) {
+      this.roomChatMessages.innerHTML =
+        '<div class="room-chat-empty">Histórico temporário da sala (máx. 100 caracteres por mensagem).</div>';
+    }
+    if (this.roomChatInput) {
+      this.roomChatInput.value = '';
+    }
+    if (this.roomChatCharCount) {
+      this.roomChatCharCount.textContent = '0/100';
+    }
+    if (this.roomChatWidget) {
+      this.roomChatWidget.classList.add('hidden');
+      this.roomChatWidget.classList.remove('in-match-mode');
+    }
+  }
+
+  appendChatMessageToDOM(msg, countUnread = true) {
+    if (!this.roomChatMessages || !msg || !msg.id) return;
+    if (this.renderedChatMessageIds.has(msg.id)) return;
+    this.renderedChatMessageIds.add(msg.id);
+
+    const emptyEl = this.roomChatMessages.querySelector('.room-chat-empty');
+    if (emptyEl) emptyEl.remove();
+
+    const item = document.createElement('div');
+    item.className = 'room-chat-msg-item';
+    const skinColor = msg.skinColor || '#00f2fe';
+    item.style.borderLeftColor = skinColor;
+
+    const authorSpan = document.createElement('span');
+    authorSpan.className = 'room-chat-msg-author';
+    authorSpan.style.color = skinColor;
+    authorSpan.textContent = `${msg.username || 'Jogador'}:`;
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'room-chat-msg-text';
+    const safeText = String(msg.text || '').substring(0, 100);
+    textSpan.textContent = safeText;
+
+    item.appendChild(authorSpan);
+    item.appendChild(textSpan);
+
+    // Detecta se a mensagem contém um link de sala ou do jogo (ex: https://shove.discloud.dev/room/ZR7Q)
+    const roomLinkMatch = safeText.match(/(?:https?:\/\/[^\s]+)?\/room\/([A-Za-z0-9]{3,8})/i);
+    if (roomLinkMatch) {
+      const targetCode = roomLinkMatch[1].toUpperCase();
+      const badge = document.createElement('div');
+      badge.className = 'chat-room-link-badge';
+
+      const infoDiv = document.createElement('div');
+      infoDiv.className = 'chat-room-link-info';
+      infoDiv.innerHTML = `
+        <span class="chat-room-link-tag">SHOVE.IO ARENA • CONVITE</span>
+        <strong class="chat-room-link-title">Sala #${targetCode}</strong>
+        <span class="chat-room-link-sub">Clique para entrar direto na partida</span>
+      `;
+
+      const joinBtn = document.createElement('button');
+      joinBtn.type = 'button';
+      joinBtn.className = 'btn-chat-join-badge';
+      joinBtn.innerHTML = `${lucideIcon('external-link', 12)} <span>ENTRAR</span>`;
+      joinBtn.addEventListener('click', () => {
+        this.soundManager.playClick();
+        if (this.currentRoom && this.currentRoom.id === targetCode) {
+          this.showLobbyFeedback(`Você já está na Sala #${targetCode}!`, 'success');
+          return;
+        }
+        this.joinRoomByCode(targetCode);
+      });
+
+      badge.appendChild(infoDiv);
+      badge.appendChild(joinBtn);
+      item.appendChild(badge);
+    }
+
+    this.roomChatMessages.appendChild(item);
+    this.roomChatMessages.scrollTop = this.roomChatMessages.scrollHeight;
+
+    if (
+      countUnread &&
+      this.roomChatWidget &&
+      this.roomChatWidget.classList.contains('minimized') &&
+      this.roomChatUnreadBadge
+    ) {
+      this.unreadChatCount += 1;
+      this.roomChatUnreadBadge.textContent = String(this.unreadChatCount);
+      this.roomChatUnreadBadge.classList.remove('hidden');
+    }
+  }
+
+  isMobileDevice() {
+    return (
+      window.innerWidth <= 820 ||
+      window.matchMedia('(hover: none) and (pointer: coarse)').matches
+    );
+  }
+
+  resetHudCache() {
+    this.hudCache.roundKey = '';
+    this.hudCache.timeRemaining = -1;
+    this.hudCache.powerupKey = '';
+    this.hudCache.aliveCount = -1;
+    this.hudCache.isGrabbed = false;
+    this.hudCache.escapePresses = -1;
   }
 
   extractRoomIdFromUrl() {
@@ -83,13 +326,8 @@ class LoginScreenController {
   cacheDOM() {
     this.pingDot = document.getElementById('ping-dot');
     this.pingText = document.getElementById('ping-text');
-
-    // Banner Flutuante de Convite de Amigo
-    this.friendInviteBanner = document.getElementById('friend-invite-banner');
-    this.inviteSenderName = document.getElementById('invite-sender-name');
-    this.inviteRoomCode = document.getElementById('invite-room-code');
-    this.btnAcceptInvite = document.getElementById('btn-accept-invite');
-    this.btnDeclineInvite = document.getElementById('btn-decline-invite');
+    this.onlineWidget = document.getElementById('online-widget');
+    this.onlineCountText = document.getElementById('online-count-text');
 
     this.lobbyUiWrapper = document.getElementById('lobby-ui-wrapper');
     this.authCard = document.getElementById('auth-card');
@@ -116,17 +354,19 @@ class LoginScreenController {
     this.btnLogout = document.getElementById('btn-logout');
 
     this.lobbyTabBtns = document.querySelectorAll('.lobby-tab-btn');
-    this.lobbyTabBtnSettings = document.getElementById('lobby-tab-btn-settings');
     this.lobbyViewPlay = document.getElementById('lobby-view-play');
     this.lobbyViewFriends = document.getElementById('lobby-view-friends');
     this.lobbyViewSettings = document.getElementById('lobby-view-settings');
 
     // Elementos da Aba de Amigos
-    this.friendsOnlineCount = document.getElementById('friends-online-count');
-    this.friendsTotalBadge = document.getElementById('friends-total-badge');
+    this.friendsPendingBadge = document.getElementById('friends-pending-badge');
     this.formAddFriend = document.getElementById('form-add-friend');
-    this.inputFriendName = document.getElementById('input-friend-name');
-    this.friendsListUl = document.getElementById('friends-list-ul');
+    this.inputFriendNickname = document.getElementById('input-friend-nickname');
+    this.friendsFeedback = document.getElementById('friends-feedback');
+    this.friendRequestsBox = document.getElementById('friend-requests-box');
+    this.friendRequestsList = document.getElementById('friend-requests-list');
+    this.friendsCountBadge = document.getElementById('friends-count-badge');
+    this.friendsList = document.getElementById('friends-list');
 
     this.lobbyModeActions = document.getElementById('lobby-mode-actions');
     this.btnPlayBR = document.getElementById('btn-play-br');
@@ -165,7 +405,6 @@ class LoginScreenController {
     this.waitingHostMsg = document.getElementById('waiting-host-msg');
     this.btnLeaveRoom = document.getElementById('btn-leave-room');
 
-    // Janela Lateral "Configuração da Sala"
     this.configHostTag = document.getElementById('config-host-tag');
     this.configWindowSub = document.getElementById('config-window-sub');
     this.cfgOpenJoinToggle = document.getElementById('cfg-open-join-toggle');
@@ -181,6 +420,14 @@ class LoginScreenController {
 
     this.cfgMapsChecklist = document.getElementById('cfg-maps-checklist');
     this.cfgMapsModeHint = document.getElementById('cfg-maps-mode-hint');
+    this.cfgMapsSearch = document.getElementById('cfg-maps-search');
+    this.btnMapsAll = document.getElementById('btn-maps-all');
+    this.btnMapsNone = document.getElementById('btn-maps-none');
+
+    this.cfgPowerupsChecklist = document.getElementById('cfg-powerups-checklist');
+    this.cfgPowerupsSearch = document.getElementById('cfg-powerups-search');
+    this.btnPowerupsAll = document.getElementById('btn-powerups-all');
+    this.btnPowerupsNone = document.getElementById('btn-powerups-none');
 
     this.cfgSpeedPills = document.querySelectorAll('#cfg-speed-pills .cfg-pill');
     this.cfgDurationPills = document.querySelectorAll('#cfg-duration-pills .cfg-pill');
@@ -195,15 +442,12 @@ class LoginScreenController {
     this.bindKeyButtons = document.querySelectorAll('.bind-key-btn');
     this.btnResetControls = document.getElementById('btn-reset-controls');
 
-    // HUD da Partida, Apresentação do Mapa, Contagem 5s e Tela de Vitória 3D
     this.matchHud = document.getElementById('match-hud');
     this.hudMapName = document.getElementById('hud-map-name');
     this.hudMapDesc = document.getElementById('hud-map-desc');
     this.hudRoundPill = document.getElementById('hud-round-pill');
     this.hudTimerPill = document.getElementById('hud-timer-pill');
     this.hudPowerupTimerPill = document.getElementById('hud-powerup-timer-pill');
-    this.hudSpeedPill = document.getElementById('hud-speed-pill');
-    this.hudModePill = document.getElementById('hud-mode-pill');
     this.hudAlivePill = document.getElementById('hud-alive-pill');
     this.btnHudSound = document.getElementById('btn-hud-sound');
     this.btnQuitMatch = document.getElementById('btn-quit-match');
@@ -232,11 +476,43 @@ class LoginScreenController {
     this.btnBackToLobby = document.getElementById('btn-back-to-lobby');
   }
 
+  initStaticIcons() {
+    if (this.btnLogout) {
+      this.btnLogout.innerHTML = `${lucideIcon('log-out', 14)} <span>Sair</span>`;
+    }
+    if (this.btnCopyRoomLink) {
+      this.btnCopyRoomLink.innerHTML = `${lucideIcon('link', 13)} <span>Copiar Link</span>`;
+    }
+    if (this.btnResetControls) {
+      this.btnResetControls.innerHTML = `${lucideIcon('rotate-ccw', 14)} <span>Restaurar Padrão (WASD/Setas + Espaço + Tecla E)</span>`;
+    }
+  }
+
+  setOnlineWidgetVisible(visible) {
+    if (!this.onlineWidget) return;
+    this.onlineWidget.classList.toggle('hidden', !visible);
+  }
+
+  updateOnlineCountUI(count, force = false) {
+    if (!this.onlineCountText || typeof count !== 'number') return;
+    const now = performance.now();
+    if (!force && this.lastOnlineUiUpdateAt && now - this.lastOnlineUiUpdateAt < 4800) {
+      return;
+    }
+    this.lastOnlineUiUpdateAt = now;
+    this.onlineCountText.textContent = `Online: ${Math.max(1, count)}`;
+  }
+
   startPingMonitor() {
+    let lastPingColor = '';
     const measure = () => {
+      if (document.hidden) return;
       if (!this.socket.connected) {
         if (this.pingText) this.pingText.textContent = 'Ping: offline';
-        if (this.pingDot) this.pingDot.style.background = '#ff3366';
+        if (this.pingDot && lastPingColor !== '#ff3366') {
+          lastPingColor = '#ff3366';
+          this.pingDot.style.background = '#ff3366';
+        }
         return;
       }
       const start = performance.now();
@@ -245,8 +521,11 @@ class LoginScreenController {
         if (this.pingText) this.pingText.textContent = `Ping: ${ms} ms`;
         if (this.pingDot) {
           const color = ms < 80 ? '#00e676' : ms < 160 ? '#ffd600' : '#ff3366';
-          this.pingDot.style.background = color;
-          this.pingDot.style.boxShadow = `0 0 8px ${color}`;
+          if (color !== lastPingColor) {
+            lastPingColor = color;
+            this.pingDot.style.background = color;
+            this.pingDot.style.boxShadow = `0 0 8px ${color}`;
+          }
         }
       });
     };
@@ -255,7 +534,9 @@ class LoginScreenController {
     this.socket.on('connect', () => {
       measure();
       if (this.currentUser) {
-        this.socket.emit('user:register_presence', this.currentUser);
+        this.socket.emit('user:identify', this.currentUser, (res) => {
+          if (res?.onlineCount) this.updateOnlineCountUI(res.onlineCount);
+        });
       }
     });
   }
@@ -263,16 +544,17 @@ class LoginScreenController {
   updateSoundButtonsUI() {
     const muted = this.soundManager.muted;
     if (this.btnToggleSound) {
-      this.btnToggleSound.textContent = muted ? '🔇 Mudo' : '🔊 Som';
+      this.btnToggleSound.innerHTML = muted
+        ? `${lucideIcon('volume-x', 14)} <span>Mudo</span>`
+        : `${lucideIcon('volume-2', 14)} <span>Som</span>`;
     }
     if (this.btnHudSound) {
-      this.btnHudSound.textContent = muted ? '🔇' : '🔊';
+      this.btnHudSound.innerHTML = muted
+        ? lucideIcon('volume-x', 15)
+        : lucideIcon('volume-2', 15);
     }
   }
 
-  // ==========================================================================
-  // EVENTOS DE LOGIN, CADASTRO E CONVIDADO
-  // ==========================================================================
   bindAuthEvents() {
     this.tabButtons.forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -339,185 +621,19 @@ class LoginScreenController {
       this.soundManager.stopLobbyMusic();
       localStorage.removeItem('shove_token');
       localStorage.removeItem('shove_user');
-      this.socket.emit('user:logout');
+      this.socket.emit('room:leave');
       this.currentRoom = null;
+      this.hideAndClearRoomChat();
       window.history.replaceState({}, '', '/');
       this.activeRoomPanel.classList.add('hidden');
       this.roomConfigWindow.classList.add('hidden');
+      this.lobbyLayoutContainer.classList.remove('has-config-open');
       this.lobbyModeActions.classList.remove('hidden');
       this.lobbyLayoutContainer.classList.add('hidden');
       this.authCard.classList.remove('hidden');
     });
   }
 
-  // ==========================================================================
-  // EVENTOS DO SISTEMA DE AMIGOS (ONLINE/OFFLINE E CONVIDAR PARA PARTIDA)
-  // ==========================================================================
-  bindFriendsEvents() {
-    if (this.formAddFriend) {
-      this.formAddFriend.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const friendUsername = this.inputFriendName.value.trim();
-        if (!friendUsername) return;
-        this.soundManager.playClick();
-
-        this.socket.emit('friends:add', { friendUsername }, (res) => {
-          if (res?.error) {
-            this.showLobbyFeedback(res.error, 'error');
-            return;
-          }
-          this.inputFriendName.value = '';
-          if (this.currentUser && Array.isArray(res?.friends)) {
-            this.currentUser.friends = res.friends;
-            localStorage.setItem('shove_user', JSON.stringify(this.currentUser));
-          }
-          if (Array.isArray(res?.friendsList)) {
-            this.renderFriendsList(res.friendsList);
-          }
-          this.showLobbyFeedback(`Amigo adicionado com sucesso!`, 'success');
-        });
-      });
-    }
-
-    // Botões de Aceitar ou Recusar Convite de Amigo Recebido
-    if (this.btnAcceptInvite) {
-      this.btnAcceptInvite.addEventListener('click', () => {
-        this.soundManager.playClick();
-        const targetRoom = this.pendingInviteRoomId;
-        this.pendingInviteRoomId = null;
-        this.friendInviteBanner.classList.add('hidden');
-        if (targetRoom) {
-          this.joinRoomByCode(targetRoom, true);
-        }
-      });
-    }
-
-    if (this.btnDeclineInvite) {
-      this.btnDeclineInvite.addEventListener('click', () => {
-        this.soundManager.playClick();
-        this.pendingInviteRoomId = null;
-        this.friendInviteBanner.classList.add('hidden');
-      });
-    }
-  }
-
-  /**
-   * Renderiza a lista de amigos com indicador Online/Offline e botão Convidar para Partida.
-   */
-  renderFriendsList(list = []) {
-    this.friendsList = Array.isArray(list) ? list : [];
-
-    const onlineCount = this.friendsList.filter((f) => f.online).length;
-    if (this.friendsOnlineCount) {
-      this.friendsOnlineCount.textContent = String(onlineCount);
-    }
-    if (this.friendsTotalBadge) {
-      this.friendsTotalBadge.textContent = `${this.friendsList.length} ${
-        this.friendsList.length === 1 ? 'amigo' : 'amigos'
-      }`;
-    }
-
-    if (!this.friendsListUl) return;
-    this.friendsListUl.innerHTML = '';
-
-    if (this.friendsList.length === 0) {
-      const li = document.createElement('li');
-      li.className = 'empty-rooms-msg';
-      li.textContent = 'Você ainda não adicionou amigos. Adicione pelo Nickname acima!';
-      this.friendsListUl.appendChild(li);
-      return;
-    }
-
-    this.friendsList.forEach((friend) => {
-      const li = document.createElement('li');
-      li.className = 'friend-item';
-
-      const leftDiv = document.createElement('div');
-      leftDiv.className = 'friend-left';
-
-      const dot = document.createElement('span');
-      dot.className = 'friend-avatar-dot';
-      dot.style.background = friend.online ? friend.skinColor || '#00E676' : '#555e7a';
-      leftDiv.appendChild(dot);
-
-      const nameBlock = document.createElement('div');
-      nameBlock.className = 'friend-name-block';
-      const statusLabel = friend.online
-        ? friend.inRoomId
-          ? `🟢 Online (Na Sala #${friend.inRoomId})`
-          : '🟢 Online'
-        : '⚪ Offline';
-
-      nameBlock.innerHTML = `
-        <strong>${friend.username}</strong>
-        <span class="friend-status-text ${friend.online ? 'online' : 'offline'}">${statusLabel}</span>
-      `;
-      leftDiv.appendChild(nameBlock);
-
-      const actionsDiv = document.createElement('div');
-      actionsDiv.className = 'friend-actions';
-
-      // Botão Convidar para Partida (ativo quando o amigo está Online)
-      const inviteBtn = document.createElement('button');
-      inviteBtn.type = 'button';
-      inviteBtn.className = 'btn-invite-friend';
-      inviteBtn.disabled = !friend.online;
-      inviteBtn.textContent = '📨 Convidar';
-      inviteBtn.title = friend.online
-        ? `Convidar ${friend.username} para sua partida`
-        : `${friend.username} está Offline`;
-
-      inviteBtn.addEventListener('click', () => {
-        this.soundManager.playClick();
-        this.socket.emit(
-          'friends:invite',
-          {
-            friendUsername: friend.username,
-            playerProfile: this.currentUser
-          },
-          (res) => {
-            if (res?.error) {
-              this.showLobbyFeedback(res.error, 'error');
-              return;
-            }
-            if (res?.room) {
-              this.renderRoomState(res.room);
-            }
-            this.showLobbyFeedback(res?.message || 'Convite enviado!', 'success');
-          }
-        );
-      });
-
-      const removeBtn = document.createElement('button');
-      removeBtn.type = 'button';
-      removeBtn.className = 'btn-remove-friend';
-      removeBtn.textContent = '✖';
-      removeBtn.title = `Remover ${friend.username}`;
-      removeBtn.addEventListener('click', () => {
-        this.soundManager.playClick();
-        this.socket.emit('friends:remove', { friendUsername: friend.username }, (res) => {
-          if (this.currentUser && Array.isArray(res?.friends)) {
-            this.currentUser.friends = res.friends;
-            localStorage.setItem('shove_user', JSON.stringify(this.currentUser));
-          }
-          if (Array.isArray(res?.friendsList)) {
-            this.renderFriendsList(res.friendsList);
-          }
-        });
-      });
-
-      actionsDiv.appendChild(inviteBtn);
-      actionsDiv.appendChild(removeBtn);
-
-      li.appendChild(leftDiv);
-      li.appendChild(actionsDiv);
-      this.friendsListUl.appendChild(li);
-    });
-  }
-
-  // ==========================================================================
-  // EVENTOS DO LOBBY: CRIAR SALA, ENTRAR/PEDIR ENTRADA, PRONTO E LINK
-  // ==========================================================================
   bindLobbyEvents() {
     if (this.btnToggleSound) {
       this.btnToggleSound.addEventListener('click', () => {
@@ -534,26 +650,20 @@ class LoginScreenController {
 
     this.lobbyTabBtns.forEach((btn) => {
       btn.addEventListener('click', () => {
-        const target = btn.dataset.lobbyTab;
-        // Bloqueia abertura da aba de teclas de PC caso esteja em dispositivo mobile
-        if (this.isMobile && target === 'settings') return;
-
         this.soundManager.playClick();
         this.lobbyTabBtns.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-
+        const target = btn.dataset.lobbyTab;
         this.lobbyViewPlay.classList.toggle('hidden', target !== 'play');
         if (this.lobbyViewFriends) {
           this.lobbyViewFriends.classList.toggle('hidden', target !== 'friends');
         }
-        this.lobbyViewSettings.classList.toggle('hidden', target !== 'settings' || this.isMobile);
+        this.lobbyViewSettings.classList.toggle('hidden', target !== 'settings');
         this.listeningControlAction = null;
         this.renderControlLabels();
 
-        if (target === 'friends') {
-          this.socket.emit('friends:get_list', (list) => {
-            if (Array.isArray(list)) this.renderFriendsList(list);
-          });
+        if (target === 'friends' && this.currentUser) {
+          this.socket.emit('friends:get', { userId: this.currentUser.id });
         }
       });
     });
@@ -611,9 +721,9 @@ class LoginScreenController {
         this.soundManager.playClick();
         const fullLink = `${window.location.origin}/room/${this.currentRoom.id}`;
         navigator.clipboard?.writeText(fullLink).catch(() => {});
-        this.btnCopyRoomLink.textContent = '✅ Link Copiado!';
+        this.btnCopyRoomLink.innerHTML = `${lucideIcon('check', 13)} <span>Copiado!</span>`;
         setTimeout(() => {
-          this.btnCopyRoomLink.textContent = '🔗 Copiar Link';
+          this.btnCopyRoomLink.innerHTML = `${lucideIcon('link', 13)} <span>Copiar Link</span>`;
         }, 2000);
       });
     }
@@ -639,9 +749,11 @@ class LoginScreenController {
       this.soundManager.playClick();
       this.socket.emit('room:leave', () => {
         this.currentRoom = null;
+        this.hideAndClearRoomChat();
         window.history.replaceState({}, '', '/');
         this.activeRoomPanel.classList.add('hidden');
         this.roomConfigWindow.classList.add('hidden');
+        this.lobbyLayoutContainer.classList.remove('has-config-open');
         this.lobbyModeActions.classList.remove('hidden');
       });
     });
@@ -651,6 +763,7 @@ class LoginScreenController {
       this.socket.emit('room:leave');
       window.history.replaceState({}, '', '/');
       this.currentRoom = null;
+      this.hideAndClearRoomChat();
       this.exitMatchToLobby();
     });
 
@@ -661,17 +774,204 @@ class LoginScreenController {
     });
   }
 
-  joinRoomByCode(code, fromInvite = false) {
-    this.hideLobbyFeedback();
-    // Garante que a aba "Jogar" fique visível ao entrar na sala
-    this.lobbyTabBtns.forEach((b) => b.classList.toggle('active', b.dataset.lobbyTab === 'play'));
-    this.lobbyViewPlay.classList.remove('hidden');
-    if (this.lobbyViewFriends) this.lobbyViewFriends.classList.add('hidden');
-    this.lobbyViewSettings.classList.add('hidden');
+  /**
+   * Eventos da Aba de Amigos: verifica no banco antes de enviar convite e exige aprovação.
+   */
+  bindFriendsEvents() {
+    if (!this.formAddFriend) return;
 
+    this.formAddFriend.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!this.currentUser) return;
+      this.soundManager.playClick();
+
+      const targetNickname = (this.inputFriendNickname.value || '').trim();
+      if (!targetNickname) {
+        this.showFriendsFeedback('Digite o nickname do jogador!', 'error');
+        return;
+      }
+
+      this.socket.emit(
+        'friends:request',
+        {
+          fromUserId: this.currentUser.id,
+          targetNickname
+        },
+        (res) => {
+          if (res?.error) {
+            this.showFriendsFeedback(res.error, 'error');
+            return;
+          }
+          this.inputFriendNickname.value = '';
+          this.showFriendsFeedback(
+            res?.message || 'Solicitação de amizade enviada! Aguardando aprovação.',
+            'success'
+          );
+        }
+      );
+    });
+  }
+
+  showFriendsFeedback(msg, type = 'error') {
+    if (!this.friendsFeedback) return;
+    this.friendsFeedback.textContent = msg;
+    this.friendsFeedback.className = `feedback-msg ${type}`;
+  }
+
+  renderFriendsState({ friends = [], friendRequests = [] } = {}) {
+    if (this.friendsPendingBadge) {
+      this.friendsPendingBadge.textContent = String(friendRequests.length);
+      this.friendsPendingBadge.classList.toggle('hidden', friendRequests.length === 0);
+    }
+
+    // 1. Solicitações de Amizade Pendentes (para o usuário aprovar ou recusar)
+    if (this.friendRequestsBox && this.friendRequestsList) {
+      this.friendRequestsBox.classList.toggle('hidden', friendRequests.length === 0);
+      this.friendRequestsList.innerHTML = '';
+
+      if (friendRequests.length > 0) {
+        const reqFrag = document.createDocumentFragment();
+        friendRequests.forEach((req) => {
+          const li = document.createElement('li');
+          li.className = 'join-req-item';
+
+          const leftInfo = document.createElement('div');
+          leftInfo.className = 'player-left-info';
+          leftInfo.innerHTML = `
+            <span class="dot" style="background:${req.fromSkinColor || '#FF3366'}"></span>
+            <span class="player-name-truncate">${req.fromUsername}</span>
+            <span class="player-level-tag">Nv. ${req.fromLevel || 1}</span>
+          `;
+
+          const btnsDiv = document.createElement('div');
+          btnsDiv.className = 'join-req-btns';
+
+          const btnAccept = document.createElement('button');
+          btnAccept.type = 'button';
+          btnAccept.className = 'btn-req-accept';
+          btnAccept.innerHTML = `${lucideIcon('user-check', 12)} <span>Aceitar</span>`;
+          btnAccept.addEventListener('click', () => {
+            this.soundManager.playClick();
+            this.socket.emit(
+              'friends:respond',
+              {
+                userId: this.currentUser?.id,
+                fromUserId: req.fromUserId,
+                accept: true
+              },
+              (res) => {
+                if (res?.message) this.showFriendsFeedback(res.message, 'success');
+              }
+            );
+          });
+
+          const btnReject = document.createElement('button');
+          btnReject.type = 'button';
+          btnReject.className = 'btn-req-reject';
+          btnReject.innerHTML = `${lucideIcon('user-x', 12)} <span>Recusar</span>`;
+          btnReject.addEventListener('click', () => {
+            this.soundManager.playClick();
+            this.socket.emit('friends:respond', {
+              userId: this.currentUser?.id,
+              fromUserId: req.fromUserId,
+              accept: false
+            });
+          });
+
+          btnsDiv.appendChild(btnAccept);
+          btnsDiv.appendChild(btnReject);
+          li.appendChild(leftInfo);
+          li.appendChild(btnsDiv);
+          reqFrag.appendChild(li);
+        });
+        this.friendRequestsList.appendChild(reqFrag);
+      }
+    }
+
+    // 2. Lista de Amigos aprovados (Mostra Nome + Nível ao lado do nome)
+    if (this.friendsCountBadge) {
+      this.friendsCountBadge.textContent = `${friends.length} ${friends.length === 1 ? 'amigo' : 'amigos'}`;
+    }
+    if (!this.friendsList) return;
+
+    this.friendsList.innerHTML = '';
+    if (friends.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'empty-rooms-msg';
+      li.textContent = 'Nenhum amigo adicionado ainda. Envie um convite acima!';
+      this.friendsList.appendChild(li);
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    friends.forEach((f) => {
+      const li = document.createElement('li');
+      li.className = 'public-room-item';
+
+      const metaDiv = document.createElement('div');
+      metaDiv.className = 'public-room-meta';
+      const statusText = f.online
+        ? f.roomId
+          ? `Online • Na Sala #${f.roomId}`
+          : 'Online no Lobby'
+        : 'Offline';
+
+      metaDiv.innerHTML = `
+        <strong>
+          <span class="dot" style="width:9px;height:9px;border-radius:50%;display:inline-block;background:${f.skinColor || '#00E5FF'}"></span>
+          <span class="player-name-truncate">${f.username}</span>
+          <span class="player-level-tag">Nv. ${f.level || 1}</span>
+        </strong>
+        <span>${statusText}</span>
+      `;
+
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'join-req-btns';
+
+      if (f.online && f.roomId) {
+        const joinBtn = document.createElement('button');
+        joinBtn.type = 'button';
+        joinBtn.className = 'btn-room-action open';
+        joinBtn.innerHTML = `${lucideIcon('gamepad-2', 12)} <span>Seguir</span>`;
+        joinBtn.addEventListener('click', () => {
+          this.soundManager.playClick();
+          this.lobbyTabBtns.forEach((b) => {
+            b.classList.toggle('active', b.dataset.lobbyTab === 'play');
+          });
+          this.lobbyViewPlay.classList.remove('hidden');
+          this.lobbyViewFriends.classList.add('hidden');
+          this.joinRoomByCode(f.roomId);
+        });
+        actionsDiv.appendChild(joinBtn);
+      }
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn-kick-player';
+      removeBtn.title = `Remover ${f.username}`;
+      removeBtn.innerHTML = lucideIcon('trash-2', 12);
+      removeBtn.addEventListener('click', () => {
+        this.soundManager.playClick();
+        this.socket.emit('friends:remove', {
+          userId: this.currentUser?.id,
+          friendUserId: f.userId
+        });
+      });
+      actionsDiv.appendChild(removeBtn);
+
+      li.appendChild(metaDiv);
+      li.appendChild(actionsDiv);
+      frag.appendChild(li);
+    });
+
+    this.friendsList.appendChild(frag);
+  }
+
+  joinRoomByCode(code) {
+    this.hideLobbyFeedback();
     this.socket.emit(
       'room:join_private',
-      { roomId: code, playerProfile: this.currentUser, fromInvite },
+      { roomId: code, playerProfile: this.currentUser },
       (res) => {
         if (res?.error) {
           this.showLobbyFeedback(res.error, 'error');
@@ -701,6 +1001,8 @@ class LoginScreenController {
       return;
     }
 
+    const frag = document.createDocumentFragment();
+
     roomsList.forEach((r) => {
       const li = document.createElement('li');
       li.className = 'public-room-item';
@@ -709,14 +1011,20 @@ class LoginScreenController {
       const metaDiv = document.createElement('div');
       metaDiv.className = 'public-room-meta';
       metaDiv.innerHTML = `
-        <strong>#${r.id} • 👑 ${r.hostName}</strong>
+        <strong>
+          #${r.id} • ${lucideIcon('crown', 12)}
+          <span class="player-name-truncate">${r.hostName}</span>
+          <span class="player-level-tag">Nv. ${r.hostLevel || 1}</span>
+        </strong>
         <span>${r.playersCount}/${r.maxPlayers} Jogadores • ${modeText} • ${r.totalRounds || 3} Rounds</span>
       `;
 
       const actionBtn = document.createElement('button');
       actionBtn.type = 'button';
       actionBtn.className = `btn-room-action ${r.isOpenJoin ? 'open' : 'request'}`;
-      actionBtn.textContent = r.isOpenJoin ? '🔓 Entrar' : '🙋 Pedir Entrada';
+      actionBtn.innerHTML = r.isOpenJoin
+        ? `${lucideIcon('unlock', 12)} <span>Entrar</span>`
+        : `${lucideIcon('hand', 12)} <span>Pedir</span>`;
 
       actionBtn.addEventListener('click', () => {
         this.soundManager.playClick();
@@ -725,13 +1033,12 @@ class LoginScreenController {
 
       li.appendChild(metaDiv);
       li.appendChild(actionBtn);
-      this.publicRoomsList.appendChild(li);
+      frag.appendChild(li);
     });
+
+    this.publicRoomsList.appendChild(frag);
   }
 
-  // ==========================================================================
-  // EVENTOS DA JANELA LATERAL "CONFIGURAÇÃO DA SALA"
-  // ==========================================================================
   bindRoomConfigWindowEvents() {
     const sendConfigUpdate = (patch) => {
       if (!this.currentRoom || this.currentRoom.hostId !== this.socket.id) return;
@@ -805,9 +1112,47 @@ class LoginScreenController {
       });
     }
 
-    if (this.cfgPowerupsToggle) {
-      this.cfgPowerupsToggle.addEventListener('change', () => {
-        sendConfigUpdate({ powerupsEnabled: this.cfgPowerupsToggle.checked });
+    if (this.btnMapsAll) {
+      this.btnMapsAll.addEventListener('click', () => {
+        if (!this.currentRoom || !Array.isArray(this.currentRoom.allMapsCatalog)) return;
+        sendConfigUpdate({
+          selectedMapIds: this.currentRoom.allMapsCatalog.map((m) => m.id)
+        });
+      });
+    }
+
+    if (this.btnMapsNone) {
+      this.btnMapsNone.addEventListener('click', () => {
+        if (!this.currentRoom) return;
+        sendConfigUpdate({ selectedMapIds: [] });
+      });
+    }
+
+    if (this.cfgMapsSearch) {
+      this.cfgMapsSearch.addEventListener('input', () => {
+        if (this.currentRoom) this.renderMapsCatalogChecklist(this.currentRoom);
+      });
+    }
+
+    if (this.btnPowerupsAll) {
+      this.btnPowerupsAll.addEventListener('click', () => {
+        if (!this.currentRoom || !Array.isArray(this.currentRoom.allPowerupsCatalog)) return;
+        sendConfigUpdate({
+          selectedPowerupIds: this.currentRoom.allPowerupsCatalog.map((p) => p.id || p.type)
+        });
+      });
+    }
+
+    if (this.btnPowerupsNone) {
+      this.btnPowerupsNone.addEventListener('click', () => {
+        if (!this.currentRoom) return;
+        sendConfigUpdate({ selectedPowerupIds: [] });
+      });
+    }
+
+    if (this.cfgPowerupsSearch) {
+      this.cfgPowerupsSearch.addEventListener('input', () => {
+        if (this.currentRoom) this.renderPowerupsCatalogChecklist(this.currentRoom);
       });
     }
 
@@ -818,19 +1163,15 @@ class LoginScreenController {
     });
   }
 
-  // ==========================================================================
-  // ABA DE CONFIGURAÇÕES DE CONTROLES (EXCLUSIVO PC)
-  // ==========================================================================
   bindSettingsEvents() {
     this.bindKeyButtons.forEach((btn) => {
       btn.addEventListener('click', (e) => {
-        if (this.isMobile) return;
         e.stopPropagation();
         this.soundManager.playClick();
         const action = btn.dataset.action;
         this.listeningControlAction = action;
         this.renderControlLabels();
-        btn.textContent = 'Aperte tecla ou clique...';
+        btn.textContent = 'Aperte tecla...';
         btn.classList.add('listening');
       });
 
@@ -878,28 +1219,17 @@ class LoginScreenController {
     });
   }
 
-  // ==========================================================================
-  // EVENTOS EM TEMPO REAL DO SOCKET.IO
-  // ==========================================================================
   bindSocketEvents() {
+    this.socket.on('server:online_count', ({ onlineCount }) => {
+      this.updateOnlineCountUI(onlineCount);
+    });
+
+    this.socket.on('friends:updated', (data) => {
+      this.renderFriendsState(data);
+    });
+
     this.socket.on('rooms:list', (list) => {
       this.renderPublicRoomsList(list);
-    });
-
-    // Atualização em tempo real do status Online/Offline dos Amigos
-    this.socket.on('friends:list_update', (list) => {
-      this.renderFriendsList(list);
-    });
-
-    // Quando um Amigo envia um convite para entrar na partida dele
-    this.socket.on('friends:receive_invite', ({ roomId, fromUsername }) => {
-      this.soundManager.playPowerupSpawn();
-      this.pendingInviteRoomId = roomId;
-      if (this.inviteSenderName) this.inviteSenderName.textContent = fromUsername;
-      if (this.inviteRoomCode) this.inviteRoomCode.textContent = `#${roomId}`;
-      if (this.friendInviteBanner) {
-        this.friendInviteBanner.classList.remove('hidden');
-      }
     });
 
     this.socket.on('room:update', (room) => {
@@ -918,11 +1248,25 @@ class LoginScreenController {
 
     this.socket.on('room:kicked', ({ reason }) => {
       this.currentRoom = null;
+      this.hideAndClearRoomChat();
       window.history.replaceState({}, '', '/');
       this.activeRoomPanel.classList.add('hidden');
       this.roomConfigWindow.classList.add('hidden');
+      this.lobbyLayoutContainer.classList.remove('has-config-open');
       this.lobbyModeActions.classList.remove('hidden');
       this.showLobbyFeedback(reason || 'Você foi expulso da sala pelo criador.', 'error');
+    });
+
+    this.socket.on('room:chat_message', ({ roomId, message }) => {
+      if (!this.currentRoom || this.currentRoom.id !== roomId || !message) return;
+      if (!Array.isArray(this.currentRoom.chatHistory)) {
+        this.currentRoom.chatHistory = [];
+      }
+      const alreadyExists = this.currentRoom.chatHistory.some((m) => m.id === message.id);
+      if (!alreadyExists) {
+        this.currentRoom.chatHistory.push(message);
+      }
+      this.appendChatMessageToDOM(message);
     });
 
     this.socket.on('room:br_countdown', (data) => {
@@ -936,9 +1280,11 @@ class LoginScreenController {
 
     this.socket.on('room:cancelled', ({ reason }) => {
       this.currentRoom = null;
+      this.hideAndClearRoomChat();
       window.history.replaceState({}, '', '/');
       this.activeRoomPanel.classList.add('hidden');
       this.roomConfigWindow.classList.add('hidden');
+      this.lobbyLayoutContainer.classList.remove('has-config-open');
       this.lobbyModeActions.classList.remove('hidden');
       this.showLobbyFeedback(reason || 'Partida cancelada por falta de jogadores.', 'error');
     });
@@ -984,45 +1330,86 @@ class LoginScreenController {
 
     this.socket.on('match:round_ended', ({ currentRound, totalRounds, roundWinnerName }) => {
       this.showPowerupToast(
-        `🏆 Fim do Round ${currentRound}/${totalRounds}! Vencedor: ${roundWinnerName}`
+        `Fim do Round ${currentRound}/${totalRounds}! Vencedor: ${roundWinnerName}`
       );
+    });
+
+    // Evento de salto nos 5 trampolins do mapa Circo Saltitante
+    this.socket.on('match:trampoline_jump', (jumpData) => {
+      this.soundManager.playTrampolineJump();
+      this.gameScene.onTrampolineJump(jumpData);
+    });
+
+    // Evento de nocaute de 2 segundos da Luva de Boxe
+    this.socket.on('match:knockout_fx', (koData) => {
+      this.soundManager.playBoxingKnockout();
+      this.gameScene.spawnShockwave({ x: koData.x, z: koData.z, power: 1.25, isMega: true });
+      if (koData.targetId === this.socket.id) {
+        this.showPowerupToast(`NOCAUTE! ${koData.attackerName} derrubou você por 2s!`);
+      } else if (koData.attackerId === this.socket.id) {
+        this.showPowerupToast(`NOCAUTE! Você derrubou ${koData.targetName} por 2s!`);
+      }
     });
 
     this.socket.on('match:state', (state) => {
       this.gameScene.onServerState(state);
 
       if (this.hudRoundPill && state.currentRound && state.totalRounds) {
-        this.hudRoundPill.textContent = `🏆 Round ${state.currentRound}/${state.totalRounds}`;
-      }
-
-      if (typeof state.timeRemaining === 'number' && this.hudTimerPill) {
-        const mins = String(Math.floor(state.timeRemaining / 60)).padStart(2, '0');
-        const secs = String(state.timeRemaining % 60).padStart(2, '0');
-        this.hudTimerPill.textContent = `⏱️ ${mins}:${secs}`;
-      }
-
-      if (this.hudPowerupTimerPill) {
-        if (state.powerupsEnabled === false) {
-          this.hudPowerupTimerPill.textContent = '🎁 Power-Ups: OFF';
-        } else if (typeof state.nextPowerupIn === 'number') {
-          this.hudPowerupTimerPill.textContent = `🎁 Novo Power-Up: ${state.nextPowerupIn}s`;
+        const roundKey = `${state.currentRound}/${state.totalRounds}`;
+        if (roundKey !== this.hudCache.roundKey) {
+          this.hudCache.roundKey = roundKey;
+          this.hudRoundPill.innerHTML = `${lucideIcon('trophy', 13)} <span>Round ${roundKey}</span>`;
         }
       }
 
-      if (typeof state.speedMultiplier === 'number' && this.hudSpeedPill) {
-        this.hudSpeedPill.textContent = `⚡ ${state.speedMultiplier.toFixed(2)}x`;
+      if (typeof state.timeRemaining === 'number' && this.hudTimerPill) {
+        if (state.timeRemaining !== this.hudCache.timeRemaining) {
+          this.hudCache.timeRemaining = state.timeRemaining;
+          const mins = String(Math.floor(state.timeRemaining / 60)).padStart(2, '0');
+          const secs = String(state.timeRemaining % 60).padStart(2, '0');
+          this.hudTimerPill.innerHTML = `${lucideIcon('clock', 13)} <span>${mins}:${secs}</span>`;
+        }
+      }
+
+      if (this.hudPowerupTimerPill) {
+        const powerupKey =
+          state.powerupsEnabled === false ? 'OFF' : String(state.nextPowerupIn ?? '');
+        if (powerupKey !== this.hudCache.powerupKey) {
+          this.hudCache.powerupKey = powerupKey;
+          if (state.powerupsEnabled === false) {
+            this.hudPowerupTimerPill.innerHTML = `${lucideIcon('gift', 13)} <span>Power-Ups: OFF</span>`;
+          } else if (typeof state.nextPowerupIn === 'number') {
+            this.hudPowerupTimerPill.innerHTML = `${lucideIcon('gift', 13)} <span>Power-Up: ${state.nextPowerupIn}s</span>`;
+          }
+        }
       }
 
       if (state && Array.isArray(state.players)) {
-        const aliveCount = state.players.filter((p) => p.alive).length;
-        this.hudAlivePill.textContent = `🔥 ${aliveCount} Vivos`;
+        let aliveCount = 0;
+        let me = null;
+        const myId = this.socket.id;
 
-        const me = state.players.find((p) => p.id === this.socket.id);
-        if (me && me.grabbedById) {
-          this.hudEscapeBanner.classList.remove('hidden');
-          this.hudEscapeCounter.textContent = `${me.escapePresses || 0}/5`;
-        } else {
-          this.hudEscapeBanner.classList.add('hidden');
+        for (let i = 0; i < state.players.length; i++) {
+          const p = state.players[i];
+          if (p.alive) aliveCount++;
+          if (p.id === myId) me = p;
+        }
+
+        if (aliveCount !== this.hudCache.aliveCount && this.hudAlivePill) {
+          this.hudCache.aliveCount = aliveCount;
+          this.hudAlivePill.innerHTML = `${lucideIcon('flame', 13)} <span>${aliveCount} Vivos</span>`;
+        }
+
+        const isGrabbed = Boolean(me && me.grabbedById);
+        const escapePresses = me ? me.escapePresses || 0 : 0;
+
+        if (isGrabbed !== this.hudCache.isGrabbed) {
+          this.hudCache.isGrabbed = isGrabbed;
+          this.hudEscapeBanner.classList.toggle('hidden', !isGrabbed);
+        }
+        if (isGrabbed && escapePresses !== this.hudCache.escapePresses) {
+          this.hudCache.escapePresses = escapePresses;
+          this.hudEscapeCounter.textContent = `${escapePresses}/5`;
         }
       }
     });
@@ -1039,6 +1426,8 @@ class LoginScreenController {
     this.socket.on('match:grabbed', ({ victimId }) => {
       this.soundManager.playGrab();
       if (victimId === this.socket.id) {
+        this.hudCache.isGrabbed = true;
+        this.hudCache.escapePresses = 0;
         this.hudEscapeBanner.classList.remove('hidden');
         this.hudEscapeCounter.textContent = `0/5`;
       }
@@ -1046,12 +1435,14 @@ class LoginScreenController {
 
     this.socket.on('match:escape_progress', ({ victimId, presses, required }) => {
       if (victimId === this.socket.id) {
+        this.hudCache.escapePresses = presses;
         this.hudEscapeCounter.textContent = `${presses}/${required}`;
       }
     });
 
     this.socket.on('match:escaped', () => {
       this.soundManager.playEscapeStun();
+      this.hudCache.isGrabbed = false;
       this.hudEscapeBanner.classList.add('hidden');
     });
 
@@ -1064,10 +1455,10 @@ class LoginScreenController {
       this.soundManager.playPowerupSpawn();
     });
 
-    this.socket.on('match:powerup_collected', ({ powerupIcon, powerupName, playerId }) => {
+    this.socket.on('match:powerup_collected', ({ powerupName, playerId }) => {
       this.soundManager.playPowerupPickup();
       if (playerId === this.socket.id) {
-        this.showPowerupToast(`${powerupIcon} Você pegou: ${powerupName}!`);
+        this.showPowerupToast(`Você pegou: ${powerupName}!`);
       }
     });
 
@@ -1076,12 +1467,14 @@ class LoginScreenController {
       this.gameScene.spawnLightningBolt(shockData);
     });
 
+    // No celular, não exibe o feedback de usuários eliminados
     this.socket.on('match:eliminated', ({ victimName, killerName }) => {
       this.soundManager.playFall();
+      if (this.isMobileDevice()) return;
       this.pushKillFeedItem(
         killerName
-          ? `💥 ${killerName} eliminou ${victimName}!`
-          : `💫 ${victimName} foi eliminado!`
+          ? `${killerName} eliminou ${victimName}!`
+          : `${victimName} foi eliminado!`
       );
     });
 
@@ -1092,17 +1485,17 @@ class LoginScreenController {
   }
 
   pushKillFeedItem(text) {
-    if (!this.killFeed) return;
+    if (!this.killFeed || this.isMobileDevice()) return;
     const div = document.createElement('div');
-    div.className = 'kill-item';
-    div.textContent = text;
+    div.className = 'kill-item icon-text-inline';
+    div.innerHTML = `${lucideIcon('swords', 13)} <span>${text}</span>`;
     this.killFeed.prepend(div);
     setTimeout(() => div.remove(), 4500);
   }
 
   showPowerupToast(text) {
     if (!this.hudPowerupToast) return;
-    this.hudPowerupToast.textContent = text;
+    this.hudPowerupToast.innerHTML = `${lucideIcon('sparkles', 14)} <span>${text}</span>`;
     this.hudPowerupToast.classList.remove('hidden');
     clearTimeout(this.powerupToastTimer);
     this.powerupToastTimer = setTimeout(() => {
@@ -1110,12 +1503,108 @@ class LoginScreenController {
     }, 3200);
   }
 
-  // ==========================================================================
-  // RENDERIZAÇÃO DO ESTADO DA SALA, JANELA DE CONFIGURAÇÃO E EXPULSÃO
-  // ==========================================================================
+  renderMapsCatalogChecklist(room) {
+    if (!this.cfgMapsChecklist || !room || !Array.isArray(room.allMapsCatalog)) return;
+    const isHost = room.hostId === this.socket.id;
+    const selectedIds = Array.isArray(room.selectedMapIds) ? room.selectedMapIds : [];
+    const totalCount = room.allMapsCatalog.length;
+
+    if (this.cfgMapsModeHint) {
+      this.cfgMapsModeHint.innerHTML = `${lucideIcon('map', 12)} <span>${selectedIds.length}/${totalCount} selecionados</span>`;
+    }
+    if (this.btnMapsAll) this.btnMapsAll.disabled = !isHost;
+    if (this.btnMapsNone) this.btnMapsNone.disabled = !isHost;
+
+    const query = (this.cfgMapsSearch?.value || '').trim().toLowerCase();
+    const filteredMaps = query
+      ? room.allMapsCatalog.filter((m) => m.name.toLowerCase().includes(query))
+      : room.allMapsCatalog;
+
+    this.cfgMapsChecklist.innerHTML = '';
+    const mapFrag = document.createDocumentFragment();
+
+    filteredMaps.forEach((m) => {
+      const isSelected = selectedIds.includes(m.id);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `map-check-btn ${isSelected ? 'selected' : ''}`;
+      btn.disabled = !isHost;
+      btn.title = m.description || m.name;
+      btn.innerHTML = `${lucideIcon(isSelected ? 'check-square' : 'square', 14)} <span>${m.name}</span>`;
+
+      btn.addEventListener('click', () => {
+        if (!isHost) return;
+        const nextIds = isSelected
+          ? selectedIds.filter((id) => id !== m.id)
+          : [...selectedIds, m.id];
+        this.soundManager.playClick();
+        this.socket.emit('room:update_config', {
+          roomId: room.id,
+          selectedMapIds: nextIds
+        });
+      });
+
+      mapFrag.appendChild(btn);
+    });
+
+    this.cfgMapsChecklist.appendChild(mapFrag);
+  }
+
+  renderPowerupsCatalogChecklist(room) {
+    if (!this.cfgPowerupsChecklist || !room) return;
+    const isHost = room.hostId === this.socket.id;
+    const catalog = Array.isArray(room.allPowerupsCatalog) ? room.allPowerupsCatalog : [];
+    const selectedIds = Array.isArray(room.selectedPowerupIds)
+      ? room.selectedPowerupIds
+      : catalog.map((p) => p.id || p.type);
+    const totalCount = catalog.length;
+
+    if (this.cfgPowerupsState) {
+      this.cfgPowerupsState.innerHTML = `${lucideIcon('sparkles', 12)} <span>${selectedIds.length}/${totalCount} selecionados</span>`;
+    }
+    if (this.btnPowerupsAll) this.btnPowerupsAll.disabled = !isHost;
+    if (this.btnPowerupsNone) this.btnPowerupsNone.disabled = !isHost;
+
+    const query = (this.cfgPowerupsSearch?.value || '').trim().toLowerCase();
+    const filteredPowerups = query
+      ? catalog.filter((p) => p.name.toLowerCase().includes(query))
+      : catalog;
+
+    this.cfgPowerupsChecklist.innerHTML = '';
+    const pwrFrag = document.createDocumentFragment();
+
+    filteredPowerups.forEach((p) => {
+      const pId = p.id || p.type;
+      const isSelected = selectedIds.includes(pId);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `map-check-btn ${isSelected ? 'selected' : ''}`;
+      btn.disabled = !isHost;
+      btn.innerHTML = `${lucideIcon(isSelected ? 'check-square' : 'square', 14)} <span>${p.name}</span>`;
+
+      btn.addEventListener('click', () => {
+        if (!isHost) return;
+        const nextIds = isSelected
+          ? selectedIds.filter((id) => id !== pId)
+          : [...selectedIds, pId];
+        this.soundManager.playClick();
+        this.socket.emit('room:update_config', {
+          roomId: room.id,
+          selectedPowerupIds: nextIds
+        });
+      });
+
+      pwrFrag.appendChild(btn);
+    });
+
+    this.cfgPowerupsChecklist.appendChild(pwrFrag);
+  }
+
   renderRoomState(room) {
     if (!room) return;
     this.currentRoom = room;
+    this.setOnlineWidgetVisible(true);
+    this.syncRoomChatFromRoom(room, false);
 
     const isHost = room.hostId === this.socket.id;
     const isPrivate = room.mode === 'PRIVATE';
@@ -1123,32 +1612,37 @@ class LoginScreenController {
     if (isPrivate) {
       window.history.replaceState({}, '', `/room/${room.id}`);
       if (this.roomShareUrl) {
-        this.roomShareUrl.textContent = `https://shove.discloud.dev/room/${room.id}`;
+        this.roomShareUrl.textContent = `${window.location.origin}/room/${room.id}`;
       }
     }
 
     this.lobbyModeActions.classList.add('hidden');
     this.activeRoomPanel.classList.remove('hidden');
     this.roomConfigWindow.classList.toggle('hidden', !isPrivate);
+    this.lobbyLayoutContainer.classList.toggle('has-config-open', isPrivate);
 
     this.roomCodeDisplay.textContent = room.id;
-    this.roomModeDisplay.textContent =
-      room.teamSize === 1 ? '👤 Solo (Individual)' : `👥 Times de ${room.teamSize}`;
+    this.roomModeDisplay.innerHTML =
+      room.teamSize === 1
+        ? `${lucideIcon('user', 13)} <span>Solo</span>`
+        : `${lucideIcon('users', 13)} <span>Times de ${room.teamSize}</span>`;
     this.roomCountDisplay.textContent = `${room.players.length}/${room.maxPlayers} Jogadores`;
 
     if (room.teamSize > 1) {
-      this.roomFfBadge.textContent = room.friendlyFire
-        ? '💥 Fogo Amigo: ATIVADO'
-        : '🛡️ Fogo Amigo: DESATIVADO';
+      this.roomFfBadge.innerHTML = room.friendlyFire
+        ? `${lucideIcon('flame', 12)} <span>Fogo Amigo: ON</span>`
+        : `${lucideIcon('shield', 12)} <span>Fogo Amigo: OFF</span>`;
     } else {
-      this.roomFfBadge.textContent = '⚔️ Todos contra Todos';
+      this.roomFfBadge.innerHTML = `${lucideIcon('swords', 12)} <span>Todos contra Todos</span>`;
     }
 
     if (this.roomRoundsBadge) {
-      this.roomRoundsBadge.textContent = `🏆 ${room.totalRounds || 3} Rounds`;
+      this.roomRoundsBadge.innerHTML = `${lucideIcon('trophy', 12)} <span>${room.totalRounds || 3} Rounds</span>`;
     }
     if (this.roomAccessBadge) {
-      this.roomAccessBadge.textContent = room.isOpenJoin ? '🔓 Entrada Livre' : '🔒 Por Solicitação';
+      this.roomAccessBadge.innerHTML = room.isOpenJoin
+        ? `${lucideIcon('unlock', 12)} <span>Entrada Livre</span>`
+        : `${lucideIcon('lock', 12)} <span>Por Solicitação</span>`;
     }
 
     this.brCountdownBanner.classList.toggle('hidden', room.mode !== 'BATTLEROYALE');
@@ -1160,10 +1654,17 @@ class LoginScreenController {
 
       if (showRequests) {
         this.joinRequestsList.innerHTML = '';
+        const reqFrag = document.createDocumentFragment();
         requests.forEach((req) => {
           const li = document.createElement('li');
           li.className = 'join-req-item';
-          li.innerHTML = `<span>🙋 ${req.username} quer entrar</span>`;
+          li.innerHTML = `
+            <span class="player-left-info">
+              ${lucideIcon('hand', 13)}
+              <span class="player-name-truncate">${req.username}</span>
+              <span class="player-level-tag">Nv. ${req.level || 1}</span>
+            </span>
+          `;
 
           const btnsDiv = document.createElement('div');
           btnsDiv.className = 'join-req-btns';
@@ -1171,7 +1672,7 @@ class LoginScreenController {
           const btnAccept = document.createElement('button');
           btnAccept.type = 'button';
           btnAccept.className = 'btn-req-accept';
-          btnAccept.textContent = '✅ Aceitar';
+          btnAccept.innerHTML = `${lucideIcon('check', 12)} <span>Aceitar</span>`;
           btnAccept.addEventListener('click', () => {
             this.soundManager.playClick();
             this.socket.emit('room:respond_join', {
@@ -1184,7 +1685,7 @@ class LoginScreenController {
           const btnReject = document.createElement('button');
           btnReject.type = 'button';
           btnReject.className = 'btn-req-reject';
-          btnReject.textContent = '❌ Recusar';
+          btnReject.innerHTML = `${lucideIcon('x', 12)} <span>Recusar</span>`;
           btnReject.addEventListener('click', () => {
             this.soundManager.playClick();
             this.socket.emit('room:respond_join', {
@@ -1197,14 +1698,16 @@ class LoginScreenController {
           btnsDiv.appendChild(btnAccept);
           btnsDiv.appendChild(btnReject);
           li.appendChild(btnsDiv);
-          this.joinRequestsList.appendChild(li);
+          reqFrag.appendChild(li);
         });
+        this.joinRequestsList.appendChild(reqFrag);
       }
     }
 
     if (isPrivate) {
       if (this.configHostTag) {
         this.configHostTag.classList.toggle('hidden', !isHost);
+        this.configHostTag.innerHTML = `${lucideIcon('crown', 12)} <span>Criador da Sala</span>`;
       }
       if (this.configWindowSub) {
         this.configWindowSub.textContent = isHost
@@ -1236,44 +1739,8 @@ class LoginScreenController {
       this.roomFfToggle.disabled = !isHost;
       this.roomFfStateLabel.textContent = room.friendlyFire ? 'SIM' : 'NÃO';
 
-      if (this.cfgMapsChecklist && Array.isArray(room.allMapsCatalog)) {
-        const selectedIds = Array.isArray(room.selectedMapIds) ? room.selectedMapIds : [];
-        if (this.cfgMapsModeHint) {
-          this.cfgMapsModeHint.textContent =
-            selectedIds.length > 1 ? '🎲 Randômico (Muda a cada round)' : '📌 Mapa Fixo';
-        }
-
-        this.cfgMapsChecklist.innerHTML = '';
-        room.allMapsCatalog.forEach((m) => {
-          const isSelected = selectedIds.includes(m.id);
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = `map-check-btn ${isSelected ? 'selected' : ''}`;
-          btn.disabled = !isHost;
-          btn.innerHTML = `<span>${isSelected ? '✅' : '⬜'}</span> <span>${m.name}</span>`;
-
-          btn.addEventListener('click', () => {
-            if (!isHost) return;
-            let nextIds = [...selectedIds];
-            if (isSelected) {
-              if (nextIds.length <= 1) {
-                this.showLobbyFeedback('Mantenha pelo menos 1 mapa selecionado!', 'error');
-                return;
-              }
-              nextIds = nextIds.filter((id) => id !== m.id);
-            } else {
-              nextIds.push(m.id);
-            }
-            this.soundManager.playClick();
-            this.socket.emit('room:update_config', {
-              roomId: room.id,
-              selectedMapIds: nextIds
-            });
-          });
-
-          this.cfgMapsChecklist.appendChild(btn);
-        });
-      }
+      this.renderMapsCatalogChecklist(room);
+      this.renderPowerupsCatalogChecklist(room);
 
       this.cfgSpeedPills.forEach((pill) => {
         pill.classList.toggle(
@@ -1292,11 +1759,11 @@ class LoginScreenController {
       this.btnBotsMinus.disabled = !isHost;
       this.btnBotsPlus.disabled = !isHost;
 
-      const pwrEnabled = room.powerupsEnabled !== false;
-      this.cfgPowerupsToggle.checked = pwrEnabled;
-      this.cfgPowerupsToggle.disabled = !isHost;
-      this.cfgPowerupsState.textContent = pwrEnabled ? 'SIM' : 'NÃO';
-      this.cfgPowerupIntervalBlock.classList.toggle('hidden', !pwrEnabled);
+      const selectedPwrIds = Array.isArray(room.selectedPowerupIds) ? room.selectedPowerupIds : [];
+      const pwrEnabled = room.powerupsEnabled !== false && selectedPwrIds.length > 0;
+      if (this.cfgPowerupIntervalBlock) {
+        this.cfgPowerupIntervalBlock.classList.toggle('hidden', !pwrEnabled);
+      }
 
       this.cfgSpawnPills.forEach((pill) => {
         pill.classList.toggle(
@@ -1310,6 +1777,7 @@ class LoginScreenController {
     if (room.teamSize > 1 && Array.isArray(room.availableTeams)) {
       this.teamPickerBox.classList.remove('hidden');
       this.teamButtonsGrid.innerHTML = '';
+      const teamFrag = document.createDocumentFragment();
 
       const myPlayer = room.players.find((p) => p.socketId === this.socket.id);
 
@@ -1326,7 +1794,7 @@ class LoginScreenController {
         btn.disabled = isFull;
 
         btn.innerHTML = `
-          <span>${team.icon} ${team.name}</span>
+          <span class="icon-text-inline">${lucideIcon(team.icon || 'shield', 13)} <span>${team.name}</span></span>
           <span>${membersCount}/${room.teamSize}</span>
         `;
 
@@ -1341,8 +1809,9 @@ class LoginScreenController {
           );
         });
 
-        this.teamButtonsGrid.appendChild(btn);
+        teamFrag.appendChild(btn);
       });
+      this.teamButtonsGrid.appendChild(teamFrag);
     } else {
       this.teamPickerBox.classList.add('hidden');
     }
@@ -1363,10 +1832,10 @@ class LoginScreenController {
       this.btnToggleReady.classList.toggle('hidden', !showReadyButton);
       if (showReadyButton) {
         if (me?.isReady) {
-          this.btnToggleReady.textContent = '✅ VOCÊ ESTÁ PRONTO! (Clique p/ desmarcar)';
+          this.btnToggleReady.innerHTML = `${lucideIcon('x', 15)} <span>Cancelar Pronto</span>`;
           this.btnToggleReady.className = 'btn-success btn-3d';
         } else {
-          this.btnToggleReady.textContent = '✋ CLICAR EM "PRONTO"';
+          this.btnToggleReady.innerHTML = `${lucideIcon('check', 15)} <span>Estou Pronto!</span>`;
           this.btnToggleReady.className = 'btn-accent btn-3d';
         }
       }
@@ -1376,19 +1845,17 @@ class LoginScreenController {
     if (isHost && isPrivate) {
       const canStart = Boolean(room.allRealReady);
       this.btnStartMatch.disabled = !canStart;
-      this.btnStartMatch.textContent = canStart
-        ? '🚀 COMEÇAR PARTIDA!'
-        : `⏳ AGUARDANDO CONVIDADOS EM "PRONTO" (${readyGuests.length}/${guestRealPlayers.length})`;
+      this.btnStartMatch.innerHTML = canStart
+        ? `${lucideIcon('rocket', 16)} <span>COMEÇAR PARTIDA!</span>`
+        : `${lucideIcon('clock', 15)} <span>Aguardando convidados (${readyGuests.length}/${guestRealPlayers.length})</span>`;
     }
 
     this.waitingHostMsg.classList.toggle('hidden', isHost || !isPrivate);
 
-    // Lista de jogadores na sala (com botão rápido +Amigo e botão Expulsar para o Criador)
-    const myFriendNamesLower = new Set(
-      (this.friendsList || []).map((f) => String(f.username).toLowerCase())
-    );
-
+    // Lista de jogadores dentro da sala mostrando o Nível (Nv. X) ao lado do nome!
     this.roomPlayersList.innerHTML = '';
+    const playersFrag = document.createDocumentFragment();
+
     room.players.forEach((p) => {
       const li = document.createElement('li');
       if (p.teamColor) {
@@ -1403,43 +1870,40 @@ class LoginScreenController {
       dot.style.background = p.skinColor;
       leftDiv.appendChild(dot);
 
-      const prefix = p.teamIcon ? `${p.teamIcon} ` : '';
       const isPlayerHost = p.socketId === room.hostId;
-      const hostCrown = isPlayerHost ? '👑 ' : '';
-      leftDiv.appendChild(document.createTextNode(`${hostCrown}${prefix}${p.username}`));
+      const roleIcon = isPlayerHost
+        ? lucideIcon('crown', 13)
+        : p.isBot
+          ? lucideIcon('bot', 13)
+          : p.teamIcon
+            ? lucideIcon(p.teamIcon, 13)
+            : '';
+
+      const nameWrap = document.createElement('span');
+      nameWrap.className = 'player-name-truncate icon-text-inline';
+      nameWrap.innerHTML = `${roleIcon} <span>${p.username}</span>`;
+      leftDiv.appendChild(nameWrap);
+
+      const levelBadge = document.createElement('span');
+      levelBadge.className = 'player-level-tag';
+      levelBadge.textContent = `Nv. ${p.level || p.stats?.level || 1}`;
+      leftDiv.appendChild(levelBadge);
 
       const rightDiv = document.createElement('div');
       rightDiv.className = 'player-right-actions';
 
-      // Botão rápido para adicionar colega da sala como Amigo
-      if (!p.isBot && p.socketId !== this.socket.id && !myFriendNamesLower.has(p.username.toLowerCase())) {
-        const addFriendBtn = document.createElement('button');
-        addFriendBtn.type = 'button';
-        addFriendBtn.className = 'btn-quick-friend';
-        addFriendBtn.textContent = '➕ Amigo';
-        addFriendBtn.title = `Adicionar ${p.username} aos amigos`;
-        addFriendBtn.addEventListener('click', () => {
-          this.soundManager.playClick();
-          this.socket.emit('friends:add', { friendUsername: p.username }, (res) => {
-            if (Array.isArray(res?.friendsList)) {
-              this.renderFriendsList(res.friendsList);
-              this.renderRoomState(this.currentRoom);
-            }
-          });
-        });
-        rightDiv.appendChild(addFriendBtn);
-      }
-
       const readySpan = document.createElement('span');
       if (p.isBot) {
         readySpan.className = 'ready-status-tag is-ready';
-        readySpan.textContent = '🤖 BOT';
+        readySpan.innerHTML = `${lucideIcon('bot', 11)} <span>BOT</span>`;
       } else if (isPlayerHost) {
         readySpan.className = 'ready-status-tag is-ready';
-        readySpan.textContent = '👑 LÍDER';
+        readySpan.innerHTML = `${lucideIcon('crown', 11)} <span>LÍDER</span>`;
       } else {
         readySpan.className = `ready-status-tag ${p.isReady ? 'is-ready' : 'not-ready'}`;
-        readySpan.textContent = p.isReady ? '✅ PRONTO' : '⏳ NÃO PRONTO';
+        readySpan.innerHTML = p.isReady
+          ? `${lucideIcon('check', 11)} <span>PRONTO</span>`
+          : `${lucideIcon('clock', 11)} <span>AGUARDANDO</span>`;
       }
       rightDiv.appendChild(readySpan);
 
@@ -1447,7 +1911,7 @@ class LoginScreenController {
         const kickBtn = document.createElement('button');
         kickBtn.type = 'button';
         kickBtn.className = 'btn-kick-player';
-        kickBtn.textContent = '🚫 Expulsar';
+        kickBtn.innerHTML = `${lucideIcon('ban', 11)} <span>Expulsar</span>`;
         kickBtn.title = `Expulsar ${p.username} da sala`;
         kickBtn.addEventListener('click', () => {
           this.soundManager.playClick();
@@ -1461,14 +1925,16 @@ class LoginScreenController {
 
       li.appendChild(leftDiv);
       li.appendChild(rightDiv);
-      this.roomPlayersList.appendChild(li);
+      playersFrag.appendChild(li);
     });
+
+    this.roomPlayersList.appendChild(playersFrag);
   }
 
-  // ==========================================================================
-  // TRANSIÇÃO ENTRE LOBBY, PARTIDA 3D E TELA DE VITÓRIA COM DADOS DE XP
-  // ==========================================================================
   enterMatchArena(room, map, currentRound = 1, totalRounds = 3) {
+    this.resetHudCache();
+    this.setOnlineWidgetVisible(false);
+    this.syncRoomChatFromRoom(room || this.currentRoom, true);
     this.bgScene.setPaused(true);
     this.lobbyUiWrapper.classList.add('hidden');
     this.victoryScreenOverlay.classList.add('hidden');
@@ -1481,18 +1947,13 @@ class LoginScreenController {
     }
 
     if (this.hudRoundPill) {
-      this.hudRoundPill.textContent = `🏆 Round ${currentRound}/${totalRounds}`;
+      const rk = `${currentRound}/${totalRounds}`;
+      this.hudCache.roundKey = rk;
+      this.hudRoundPill.innerHTML = `${lucideIcon('trophy', 13)} <span>Round ${rk}</span>`;
     }
 
-    this.hudMapName.textContent = `🗺️ ${map?.name || 'Arena Shove.io'}`;
+    this.hudMapName.innerHTML = `${lucideIcon('map', 14)} <span>${map?.name || 'Arena Shove.io'}</span>`;
     this.hudMapDesc.textContent = map?.description || 'Empurre seus adversários para fora!';
-
-    if (room.teamSize > 1) {
-      const ffText = room.friendlyFire ? '💥 Fogo Amigo ON' : '🛡️ Sem Fogo Amigo';
-      this.hudModePill.textContent = `👥 Times de ${room.teamSize} (${ffText})`;
-    } else {
-      this.hudModePill.textContent = '👤 Individual (Solo)';
-    }
 
     this.gameScene.startMatch({
       room,
@@ -1502,19 +1963,16 @@ class LoginScreenController {
   }
 
   showFullVictoryScreen(result) {
+    this.setOnlineWidgetVisible(false);
     this.matchHud.classList.add('hidden');
     this.mapPresentationOverlay.classList.add('hidden');
     this.bigCountdownOverlay.classList.add('hidden');
     this.victoryScreenOverlay.classList.remove('hidden');
 
     if (result.winnerType === 'TEAM') {
-      this.resultWinnerTitle.textContent = `🏆 VITÓRIA DO ${result.winnerName.toUpperCase()}!`;
-      this.resultWinnerSubtitle.textContent =
-        'Lado Esquerdo: Time Campeão • Lado Direito: Adversários Eliminados';
+      this.resultWinnerTitle.innerHTML = `${lucideIcon('trophy', 22)} <span>VITÓRIA DO ${result.winnerName.toUpperCase()}!</span>`;
     } else {
-      this.resultWinnerTitle.textContent = `🏆 ${result.winnerName.toUpperCase()} VENCEU A PARTIDA!`;
-      this.resultWinnerSubtitle.textContent =
-        'Lado Esquerdo: Grande Campeão • Lado Direito: Adversários Eliminados';
+      this.resultWinnerTitle.innerHTML = `${lucideIcon('trophy', 22)} <span>${result.winnerName.toUpperCase()} VENCEU A PARTIDA!</span>`;
     }
 
     const myXpReport = result.xpReportBySocket ? result.xpReportBySocket[this.socket.id] : null;
@@ -1527,9 +1985,9 @@ class LoginScreenController {
       }
 
       const levelLabel = myXpReport.leveledUp
-        ? `🎉 SUBIU PARA O NÍVEL ${st.level}!`
-        : `⭐ Nível ${st.level || 1}`;
-      if (this.xpCardLevel) this.xpCardLevel.textContent = levelLabel;
+        ? `${lucideIcon('sparkles', 16)} <span>SUBIU PARA O NÍVEL ${st.level}!</span>`
+        : `${lucideIcon('star', 16)} <span>Nível ${st.level || 1}</span>`;
+      if (this.xpCardLevel) this.xpCardLevel.innerHTML = levelLabel;
       if (this.xpCardTotalGained) {
         this.xpCardTotalGained.textContent = `+${myXpReport.totalXpGained} XP`;
       }
@@ -1542,10 +2000,10 @@ class LoginScreenController {
       }
       if (this.xpCardBreakdown) {
         this.xpCardBreakdown.innerHTML = `
-          <span>🥊 Shoves (${myXpReport.shoves}): +${myXpReport.xpFromShoves} XP</span>
-          <span>💥 Kills (${myXpReport.kills}): +${myXpReport.xpFromKills} XP</span>
-          <span>🏆 Rounds (${myXpReport.roundWins}): +${myXpReport.xpFromRounds} XP</span>
-          <span>🎖️ Partida: +${myXpReport.xpFromWin} XP</span>
+          <span>Shoves (${myXpReport.shoves}): +${myXpReport.xpFromShoves} XP</span>
+          <span>Kills (${myXpReport.kills}): +${myXpReport.xpFromKills} XP</span>
+          <span>Rounds (${myXpReport.roundWins}): +${myXpReport.xpFromRounds} XP</span>
+          <span>Partida: +${myXpReport.xpFromWin} XP</span>
         `;
       }
     }
@@ -1558,6 +2016,7 @@ class LoginScreenController {
   }
 
   exitMatchToLobby() {
+    this.setOnlineWidgetVisible(true);
     this.gameScene.stopMatch();
     this.matchHud.classList.add('hidden');
     this.victoryScreenOverlay.classList.add('hidden');
@@ -1575,16 +2034,15 @@ class LoginScreenController {
       this.renderRoomState(this.currentRoom);
     } else {
       this.currentRoom = null;
+      this.hideAndClearRoomChat();
       window.history.replaceState({}, '', '/');
       this.activeRoomPanel.classList.add('hidden');
       this.roomConfigWindow.classList.add('hidden');
+      this.lobbyLayoutContainer.classList.remove('has-config-open');
       this.lobbyModeActions.classList.remove('hidden');
     }
   }
 
-  // ==========================================================================
-  // AUTENTICAÇÃO HTTP E REGISTRO DE PRESENÇA ONLINE DOS AMIGOS
-  // ==========================================================================
   async authenticate(endpoint, payload) {
     try {
       this.hideFeedback();
@@ -1651,7 +2109,7 @@ class LoginScreenController {
 
     this.profileStats.textContent = `${wins} Vitórias • ${matches} Partidas • ${shoves} Shoves`;
     if (this.profileLevelBadge) {
-      this.profileLevelBadge.textContent = `⭐ Nível ${level}`;
+      this.profileLevelBadge.innerHTML = `${lucideIcon('star', 11)} <span>Nv. ${level}</span>`;
     }
     if (this.profileXpFill) {
       const pct = Math.min(100, Math.round((xp / xpNext) * 100));
@@ -1666,21 +2124,14 @@ class LoginScreenController {
     this.authCard.classList.add('hidden');
     this.lobbyLayoutContainer.classList.remove('hidden');
 
-    // Garante que em celulares a aba de Controles de PC nunca apareça
-    if (this.isMobile && this.lobbyTabBtnSettings) {
-      this.lobbyTabBtnSettings.classList.add('hidden');
-      this.lobbyViewSettings.classList.add('hidden');
-    }
-
     this.refreshProfileBarStats();
     this.soundManager.startLobbyMusic();
 
-    // Registra presença Online no servidor e carrega a lista de amigos
-    this.socket.emit('user:register_presence', this.currentUser, (res) => {
-      if (Array.isArray(res?.friendsList)) {
-        this.renderFriendsList(res.friendsList);
-      }
-    });
+    if (this.currentUser) {
+      this.socket.emit('user:identify', this.currentUser, (res) => {
+        if (res?.onlineCount) this.updateOnlineCountUI(res.onlineCount);
+      });
+    }
 
     this.socket.emit('rooms:get_list', (list) => {
       if (Array.isArray(list)) this.renderPublicRoomsList(list);

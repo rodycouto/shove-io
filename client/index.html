@@ -8,25 +8,43 @@
     content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>Shove.io Arena</title>
+  <meta name="description" content="__OG_DESCRIPTION__" />
+  <meta name="theme-color" content="#0d0e1a" />
+  <!-- OpenGraph / WhatsApp / Discord Link Preview Badge -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Shove.io Arena 3D" />
+  <meta property="og:title" content="__OG_TITLE__" />
+  <meta property="og:description" content="__OG_DESCRIPTION__" />
+  <meta property="og:image" content="__OG_IMAGE__" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="__OG_URL__" />
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="__OG_TITLE__" />
+  <meta name="twitter:description" content="__OG_DESCRIPTION__" />
+  <meta name="twitter:image" content="__OG_IMAGE__" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="/css/login.css?v=8.2" />
+  <link rel="stylesheet" href="/css/login.css" />
 </head>
 
 <body>
-  <!-- Medidor de Ping Fixo no Canto Superior Esquerdo (Sempre Visível Conectado) -->
-  <div id="ping-widget" class="ping-widget" title="Latência com o Servidor">
-    <span id="ping-dot" class="ping-dot"></span>
-    <span id="ping-text">Ping: -- ms</span>
-  </div>
-
-  <!-- Notificação Flutuante de Convite de Amigo para Partida -->
-  <div id="friend-invite-banner" class="friend-invite-banner hidden">
-    <div class="invite-banner-text">
-      <strong id="invite-sender-name">Amigo</strong> convidou você para a sala <strong id="invite-room-code">#----</strong>!
+  <!-- Barra Superior Esquerda: Medidor de Ping + Quantidade de Jogadores Online -->
+  <div id="top-telemetry-bar" class="top-telemetry-bar">
+    <div id="ping-widget" class="telemetry-pill" title="Latência com o Servidor">
+      <span id="ping-dot" class="ping-dot"></span>
+      <span id="ping-text">Ping: -- ms</span>
     </div>
-    <div class="invite-banner-actions">
-      <button type="button" id="btn-accept-invite" class="btn-req-accept">✅ Aceitar</button>
-      <button type="button" id="btn-decline-invite" class="btn-req-reject">❌ Recusar</button>
+    <div id="online-widget" class="telemetry-pill online-pill" title="Jogadores Online no Servidor">
+      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      </svg>
+      <span id="online-count-text">Online: 1</span>
     </div>
   </div>
 
@@ -36,7 +54,7 @@
   <!-- Canvas 3D do Three.js (Arena Oficial da Partida com Abismo e Palco 3D de Vitória) -->
   <canvas id="game-canvas" class="hidden"></canvas>
 
-  <!-- Camada de Interface do Lobby e Login (UI Overlay) -->
+  <!-- Camada de Interface do Lobby e Login (UI Overlay com Scroll Corrigido) -->
   <main id="lobby-ui-wrapper" class="ui-wrapper">
     <!-- Cabeçalho / Logo -->
     <header class="brand-header">
@@ -74,7 +92,7 @@
       <form id="form-login" class="auth-form">
         <div class="input-group">
           <label>Nickname ou E-mail</label>
-          <input type="text" id="login-user" placeholder="Ex: Rodrigo ou email@dominio.com" required
+          <input type="text" id="login-user" placeholder="Ex: shove ou seu@email.com" required
             autocomplete="username" />
         </div>
         <div class="input-group">
@@ -113,8 +131,8 @@
     </section>
 
     <!-- ================================================================== -->
-    <!-- CONTAINER SEMPRE LADO A LADO (PC E CELULAR):                       -->
-    <!-- MENU PRINCIPAL + JANELA "CONFIGURAÇÃO DA SALA"                     -->
+    <!-- CONTAINER LADO A LADO (OU SWIPE HORIZONTAL NO CELULAR):            -->
+    <!-- MENU PRINCIPAL + JANELA CONFIGURAÇÃO DA SALA                       -->
     <!-- ================================================================== -->
     <div id="lobby-layout-container" class="lobby-layout-container hidden">
       <!-- CARD 2: MENU PRINCIPAL DO LOBBY -->
@@ -125,7 +143,7 @@
           <div class="profile-info">
             <div class="profile-top-line">
               <strong id="profile-name">Jogador</strong>
-              <span id="profile-level-badge" class="level-badge">⭐ Nível 1</span>
+              <span id="profile-level-badge" class="level-badge">Nv. 1</span>
             </div>
             <span id="profile-stats">0 Vitórias • 0 Partidas • 0 Shoves</span>
             <div class="profile-xp-bar-wrap">
@@ -135,22 +153,49 @@
               <span id="profile-xp-text" class="profile-xp-text">0 / 200 XP</span>
             </div>
           </div>
-          <button type="button" id="btn-toggle-sound" class="btn-small-outline" title="Ativar/Desativar Sons">
-            🔊 Som
-          </button>
-          <button type="button" id="btn-logout" class="btn-small-outline">Sair</button>
+          <div class="profile-actions-col">
+            <button type="button" id="btn-toggle-sound" class="btn-small-outline icon-btn"
+              title="Ativar/Desativar Sons"></button>
+            <button type="button" id="btn-logout" class="btn-small-outline icon-btn" title="Sair"></button>
+          </div>
         </div>
 
-        <!-- Abas do Lobby: Jogar | Amigos | Controles (Controles oculto no celular!) -->
-        <div id="lobby-nav-tabs" class="lobby-nav-tabs">
+        <!-- Abas do Lobby: Jogar | Amigos | Controles -->
+        <div class="lobby-nav-tabs">
           <button type="button" class="lobby-tab-btn active" data-lobby-tab="play">
-            🎮 Jogar
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide-icon">
+              <line x1="6" x2="10" y1="11" y2="11" />
+              <line x1="8" x2="8" y1="9" y2="13" />
+              <line x1="15" x2="15.01" y1="12" y2="12" />
+              <line x1="18" x2="18.01" y1="10" y2="10" />
+              <path
+                d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" />
+            </svg>
+            <span>Jogar</span>
           </button>
           <button type="button" class="lobby-tab-btn" data-lobby-tab="friends">
-            👥 Amigos (<span id="friends-online-count">0</span>)
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide-icon">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            <span>Amigos</span>
+            <span id="friends-pending-badge" class="nav-notif-badge hidden">0</span>
           </button>
-          <button type="button" id="lobby-tab-btn-settings" class="lobby-tab-btn pc-only-tab" data-lobby-tab="settings">
-            ⚙️ Controles
+          <button type="button" class="lobby-tab-btn" data-lobby-tab="settings">
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide-icon">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            <span>Controles</span>
           </button>
         </div>
 
@@ -162,7 +207,15 @@
         <div id="lobby-view-play">
           <div id="lobby-mode-actions" class="mode-actions">
             <button type="button" id="btn-play-br" class="btn-br btn-3d">
-              <span class="mode-title">🔥 BATTLE ROYALE</span>
+              <span class="mode-title">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path
+                    d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+                </svg>
+                BATTLE ROYALE
+              </span>
               <span class="mode-sub">Online • Mín. 5 jogadores em 1 min (+Bots até 15)</span>
             </button>
 
@@ -176,7 +229,7 @@
               <div class="input-with-arrow">
                 <input type="text" id="input-room-code" placeholder="ID DA SALA" maxlength="8" />
                 <button type="button" id="btn-join-room" class="arrow-submit-btn" title="Entrar ou Pedir Entrada">
-                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="3" fill="none"
+                  <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.5" fill="none"
                     stroke-linecap="round" stroke-linejoin="round">
                     <line x1="5" y1="12" x2="19" y2="12"></line>
                     <polyline points="12 5 19 12 12 19"></polyline>
@@ -188,7 +241,16 @@
             <!-- Lista de Salas Criadas ao redor do jogo disponível para todos -->
             <div class="public-rooms-box">
               <div class="public-rooms-header">
-                <span class="public-rooms-title">🌐 Salas Criadas Disponíveis</span>
+                <span class="icon-text-inline">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+                    class="lucide-icon">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+                    <path d="M2 12h20" />
+                  </svg>
+                  Salas Criadas Disponíveis
+                </span>
                 <span id="public-rooms-count" class="badge-mini">0 salas</span>
               </div>
               <ul id="public-rooms-list" class="public-rooms-list">
@@ -203,28 +265,37 @@
           <div id="active-room-panel" class="room-waiting-box hidden">
             <div class="room-header">
               <span>SALA: <strong id="room-code-display">----</strong></span>
-              <span id="room-mode-display" class="badge-pill">👤 Solo</span>
+              <span id="room-mode-display" class="badge-pill">Solo</span>
               <span id="room-count-display">1/15 Jogadores</span>
             </div>
 
-            <!-- Link de Compartilhamento Direto: shove.io/room/ID_DA_SALA -->
+            <!-- Dica Mobile para arrastar a tela para a esquerda e abrir Configurações -->
+            <div id="mobile-swipe-config-hint" class="mobile-swipe-hint">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                class="lucide-icon">
+                <path d="m11 17-5-5 5-5" />
+                <path d="m18 17-5-5 5-5" />
+              </svg>
+              <span>Arraste a tela para a esquerda para ver a Configuração da Sala</span>
+            </div>
+
+            <!-- Link de Compartilhamento Direto -->
             <div class="share-link-bar">
               <span id="room-share-url" class="share-url-text">https://shove.discloud.dev/room/----</span>
-              <button type="button" id="btn-copy-room-link" class="btn-copy-link">
-                🔗 Copiar Link
-              </button>
+              <button type="button" id="btn-copy-room-link" class="btn-copy-link"></button>
             </div>
 
             <div class="room-sub-bar">
-              <span id="room-ff-badge" class="ff-mini-badge">🛡️ Sem Fogo Amigo</span>
-              <span id="room-rounds-badge" class="map-mini-badge">🏆 3 Rounds</span>
-              <span id="room-access-badge" class="map-mini-badge">🔒 Por Solicitação</span>
+              <span id="room-ff-badge" class="ff-mini-badge"></span>
+              <span id="room-rounds-badge" class="map-mini-badge"></span>
+              <span id="room-access-badge" class="map-mini-badge"></span>
             </div>
 
             <!-- Banner de Cronômetro do Battle Royale -->
             <div id="br-countdown-banner" class="br-timer-box hidden">
               <div class="br-timer-top">
-                <span>⏱️ Começa em: <strong id="br-timer-seconds">60s</strong></span>
+                <span>Começa em: <strong id="br-timer-seconds">60s</strong></span>
                 <span id="br-quorum-text">Mínimo: 5 jogadores reais</span>
               </div>
               <div class="br-progress-track">
@@ -234,39 +305,35 @@
 
             <!-- Caixa de Solicitações para Entrar na Sala (Visível para o Criador) -->
             <div id="join-requests-box" class="join-requests-box hidden">
-              <div class="join-requests-title">🔔 Solicitações para Entrar na Sala:</div>
+              <div class="join-requests-title">Solicitações para Entrar na Sala:</div>
               <ul id="join-requests-list" class="join-requests-list"></ul>
             </div>
 
             <!-- Seletor de Times para todos os jogadores na sala -->
             <div id="team-picker-box" class="team-picker-box hidden">
-              <div class="team-picker-title">🎨 Escolha o seu Time:</div>
+              <div class="team-picker-title">Escolha o seu Time:</div>
               <div id="team-buttons-grid" class="team-buttons-grid"></div>
             </div>
 
             <!-- Cabeçalho de Status de Pronto dos Jogadores -->
             <div class="players-list-header">
-              <span>Jogadores na Sala</span>
+              <span>Jogadores na Sala (com Nível)</span>
               <span id="ready-counter-badge">Criador pronto para iniciar</span>
             </div>
 
-            <!-- Lista de Jogadores -->
+            <!-- Lista de Jogadores (Mostra Nome + Nv. X, Pronto/Líder e botão de Expulsar) -->
             <ul id="room-players-list" class="players-grid"></ul>
 
-            <!-- Botão Individual de "PRONTO" (Não vale para o criador da sala) -->
+            <!-- Botão Individual de "PRONTO" -->
             <button type="button" id="btn-toggle-ready" class="btn-accent btn-3d hidden"
-              style="width: 100%; margin-top: 10px;">
-              ✋ CLICAR EM "PRONTO"
-            </button>
+              style="width: 100%; margin-top: 10px;"></button>
 
             <!-- Botão de Iniciar Partida (Exclusivo do Criador) -->
             <button type="button" id="btn-start-match" class="btn-success btn-3d hidden"
-              style="width: 100%; margin-top: 8px;" disabled>
-              ⏳ AGUARDANDO CONVIDADOS EM "PRONTO"
-            </button>
+              style="width: 100%; margin-top: 8px;" disabled></button>
 
             <div id="waiting-host-msg" class="waiting-host-msg hidden">
-              ⏳ Marque "Pronto" e aguarde o criador da sala iniciar!
+              Marque "Pronto" e aguarde o criador da sala iniciar!
             </div>
 
             <button type="button" id="btn-leave-room" class="btn-leave-room">
@@ -276,194 +343,312 @@
         </div>
 
         <!-- ============================================================== -->
-        <!-- ABA 2 DO LOBBY: LISTA DE AMIGOS (ONLINE/OFFLINE + CONVIDAR)    -->
+        <!-- ABA 2 DO LOBBY: LISTA DE AMIGOS (COM VERIFICAÇÃO E APROVAÇÃO)  -->
         <!-- ============================================================== -->
         <div id="lobby-view-friends" class="friends-panel hidden">
-          <form id="form-add-friend" class="add-friend-row">
-            <input type="text" id="input-friend-name" placeholder="Digite o Nickname do amigo..." maxlength="15" />
-            <button type="submit" class="btn-accent btn-add-friend">➕ Adicionar</button>
+          <form id="form-add-friend" class="friend-add-row">
+            <input type="text" id="input-friend-nickname" placeholder="Nickname exato do jogador..." maxlength="15"
+              required />
+            <button type="submit" id="btn-send-friend-req" class="btn-accent btn-3d btn-friend-send">
+              <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                class="lucide-icon">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <line x1="19" x2="19" y1="8" y2="14" />
+                <line x1="22" x2="16" y1="11" y2="11" />
+              </svg>
+              <span>Adicionar</span>
+            </button>
           </form>
 
-          <div class="public-rooms-header" style="margin-top: 4px;">
-            <span class="public-rooms-title">👥 Seus Amigos</span>
-            <span id="friends-total-badge" class="badge-mini">0 amigos</span>
+          <div id="friends-feedback" class="feedback-msg hidden"></div>
+
+          <!-- Solicitações de Amizade Pendentes (Exige Aprovação!) -->
+          <div id="friend-requests-box" class="join-requests-box hidden">
+            <div class="join-requests-title">Solicitações de Amizade Pendentes:</div>
+            <ul id="friend-requests-list" class="join-requests-list"></ul>
           </div>
 
-          <ul id="friends-list-ul" class="friends-list-ul">
-            <li class="empty-rooms-msg">Você ainda não adicionou amigos. Adicione pelo Nickname acima!</li>
-          </ul>
+          <div class="public-rooms-box">
+            <div class="public-rooms-header">
+              <span>Meus Amigos (Nome + Nível)</span>
+              <span id="friends-count-badge" class="badge-mini">0 amigos</span>
+            </div>
+            <ul id="friends-list" class="public-rooms-list">
+              <li class="empty-rooms-msg">Nenhum amigo adicionado ainda. Envie um convite acima!</li>
+            </ul>
+          </div>
         </div>
 
         <!-- ============================================================== -->
-        <!-- ABA 3 DO LOBBY: CONFIGURAÇÕES DE CONTROLES (EXCLUSIVO PC)      -->
-        <!-- Ocultado automaticamente em celulares!                         -->
+        <!-- ABA 3 DO LOBBY: CONFIGURAÇÕES DE CONTROLES (PC TECLADO/MOUSE)  -->
         <!-- ============================================================== -->
-        <div id="lobby-view-settings" class="settings-panel pc-only-tab hidden">
+        <div id="lobby-view-settings" class="settings-panel hidden">
           <p class="settings-intro">
-            Clique em um botão abaixo e aperte qualquer <strong>Tecla</strong> ou <strong>Botão do Mouse</strong> para personalizar!
+            Clique em um botão abaixo e aperte qualquer <strong>Tecla</strong> ou <strong>Botão do Mouse</strong> para
+            personalizar!
           </p>
 
           <div class="bindings-list">
             <div class="binding-item">
-              <span>⬆️ Andar para Cima</span>
-              <button type="button" class="bind-key-btn" data-action="up">W / ↑</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="m5 12 7-7 7 7" />
+                  <path d="M12 19V5" />
+                </svg>
+                Andar para Cima
+              </span>
+              <button type="button" class="bind-key-btn" data-action="up">W / SETA CIMA</button>
             </div>
             <div class="binding-item">
-              <span>⬇️ Andar para Baixo</span>
-              <button type="button" class="bind-key-btn" data-action="down">S / ↓</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="M12 5v14" />
+                  <path d="m19 12-7 7-7-7" />
+                </svg>
+                Andar para Baixo
+              </span>
+              <button type="button" class="bind-key-btn" data-action="down">S / SETA BAIXO</button>
             </div>
             <div class="binding-item">
-              <span>⬅️ Andar para Esquerda</span>
-              <button type="button" class="bind-key-btn" data-action="left">A / ←</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="m12 19-7-7 7-7" />
+                  <path d="M19 12H5" />
+                </svg>
+                Andar para Esquerda
+              </span>
+              <button type="button" class="bind-key-btn" data-action="left">A / SETA ESQ.</button>
             </div>
             <div class="binding-item">
-              <span>➡️ Andar para Direita</span>
-              <button type="button" class="bind-key-btn" data-action="right">D / →</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="M5 12h14" />
+                  <path d="m12 5 7 7-7 7" />
+                </svg>
+                Andar para Direita
+              </span>
+              <button type="button" class="bind-key-btn" data-action="right">D / SETA DIR.</button>
             </div>
             <div class="binding-item highlight">
-              <span>🥊 Empurrar (e Escapar)</span>
-              <button type="button" class="bind-key-btn" data-action="shove">ESPAÇO ⎵</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5" />
+                  <line x1="13" x2="19" y1="19" y2="13" />
+                  <line x1="16" x2="20" y1="16" y2="20" />
+                  <line x1="19" x2="21" y1="21" y2="19" />
+                </svg>
+                Empurrar (e Escapar)
+              </span>
+              <button type="button" class="bind-key-btn" data-action="shove">ESPAÇO</button>
             </div>
             <div class="binding-item highlight">
-              <span>🤲 Segurar / Levantar Rival</span>
-              <button type="button" class="bind-key-btn" data-action="grab">TECLA E / 🖱️ DIR.</button>
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+                  <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
+                  <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
+                  <path
+                    d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+                </svg>
+                Segurar / Levantar Rival
+              </span>
+              <button type="button" class="bind-key-btn" data-action="grab">TECLA E / CLIQUE DIR.</button>
             </div>
           </div>
 
+          <p class="settings-mobile-note">
+            <strong>No Celular:</strong> O Joystick Virtual, o botão de <strong>Shove</strong> e o botão de
+            <strong>Segurar</strong> aparecem na tela!
+          </p>
+
           <button type="button" id="btn-reset-controls" class="btn-small-outline" style="width: 100%; margin-top: 8px;">
-            🔄 Restaurar Padrão (WASD/Setas + Espaço + Tecla E)
+            Restaurar Padrão (WASD/Setas + Espaço + Tecla E)
           </button>
         </div>
       </section>
 
       <!-- ================================================================ -->
-      <!-- JANELA LATERAL: "CONFIGURAÇÃO DA SALA" (SEMPRE AO LADO DO MENU)  -->
+      <!-- JANELA LATERAL: "CONFIGURAÇÃO DA SALA"                           -->
+      <!-- No celular: fica à direita (acessível arrastando para a esquerda)-->
       <!-- ================================================================ -->
       <aside id="room-config-window" class="glass-card room-config-window hidden">
         <div class="config-window-header">
-          <h3>⚙️ Configuração da Sala</h3>
-          <!-- Exibido apenas para o Criador (nunca exibe "Visão dos convidados") -->
-          <span id="config-host-tag" class="config-role-badge">👑 Criador da Sala</span>
+          <h3 class="icon-text-inline">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide-icon">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+            Configuração da Sala
+          </h3>
+          <span id="config-host-tag" class="config-role-badge">Criador da Sala</span>
         </div>
 
-        <!-- Para o Criador: "Como você quer criar sua sala?" -->
-        <!-- Para Convidados: "A partida seguirá as configurações abaixo" -->
         <p id="config-window-sub" class="config-window-sub">Como você quer criar sua sala?</p>
 
-        <!-- 1. Formato dos Times -->
-        <div class="cfg-block">
-          <span class="cfg-label">👥 Formato dos Times:</span>
-          <div class="team-size-pills" id="team-size-pills">
-            <button type="button" class="size-pill active" data-size="1">👤 Solo</button>
-            <button type="button" class="size-pill" data-size="2">👥 Duplas</button>
-            <button type="button" class="size-pill" data-size="3">🛡️ Trios</button>
-            <button type="button" class="size-pill" data-size="4">⚔️ Times 4</button>
-            <button type="button" class="size-pill" data-size="5">👑 Times 5</button>
-          </div>
-        </div>
+        <!-- Layout em 2 Colunas Lado a Lado: Configurações Gerais (Esq) + Mapas e Power-Ups Opcionais (Dir) -->
+        <div class="config-columns-grid">
+          <!-- COLUNA 1: CONFIGURAÇÕES GERAIS DA SALA -->
+          <div class="config-col-general">
+            <!-- 1. Entrada Livre para Todos vs Por Solicitação -->
+            <div class="cfg-block cfg-row">
+              <div class="ff-label-group">
+                <span class="ff-title">Entrada Livre: <strong id="cfg-open-join-state">NÃO</strong></span>
+                <span class="ff-subtitle">Qualquer usuário entra direto até 15 jogadores</span>
+              </div>
+              <label class="kid-switch">
+                <input type="checkbox" id="cfg-open-join-toggle" />
+                <span class="kid-slider"></span>
+              </label>
+            </div>
 
-        <!-- 2. Quantidade de Rounds (Default: 3, Máximo: 10) -->
-        <div class="cfg-block cfg-row">
-          <div class="ff-label-group">
-            <span class="ff-title">🏆 Quantidade de Rounds</span>
-            <span class="ff-subtitle">Padrão: 3 rounds • Máximo: 10 rounds</span>
-          </div>
-          <div class="stepper-control">
-            <button type="button" id="btn-rounds-minus" class="stepper-btn">−</button>
-            <span id="cfg-rounds-value" class="stepper-val">3</span>
-            <button type="button" id="btn-rounds-plus" class="stepper-btn">+</button>
-          </div>
-        </div>
+            <!-- 2. Número de Rounds (Default: 3, Max: 10) -->
+            <div class="cfg-block cfg-row">
+              <div class="ff-label-group">
+                <span class="ff-title">Número de Rounds</span>
+                <span class="ff-subtitle">Padrão: 3 • Máximo: 10 rounds</span>
+              </div>
+              <div class="stepper-control">
+                <button type="button" id="btn-rounds-minus" class="stepper-btn">−</button>
+                <strong id="cfg-rounds-value" class="stepper-val">3</strong>
+                <button type="button" id="btn-rounds-plus" class="stepper-btn">+</button>
+              </div>
+            </div>
 
-        <!-- 3. Seleção de 1 ou mais Mapas (Sorteia aleatoriamente a cada round) -->
-        <div class="cfg-block">
-          <div class="cfg-label-row">
-            <span class="cfg-label">🗺️ Mapas da Partida (Escolha 1 ou mais):</span>
-            <span class="cfg-hint">Sorteia a cada round!</span>
-          </div>
-          <div id="cfg-maps-checklist" class="cfg-maps-checklist"></div>
-        </div>
+            <!-- 3. Modo Individual ou Times (2, 3, 4 ou 5) -->
+            <div class="cfg-block">
+              <label class="cfg-label">Modo de Jogo / Times (Máx. 15):</label>
+              <div class="team-size-pills" id="room-team-size-pills">
+                <button type="button" class="size-pill active" data-size="1">Solo</button>
+                <button type="button" class="size-pill" data-size="2">Times 2</button>
+                <button type="button" class="size-pill" data-size="3">Times 3</button>
+                <button type="button" class="size-pill" data-size="4">Times 4</button>
+                <button type="button" class="size-pill" data-size="5">Times 5</button>
+              </div>
+            </div>
 
-        <!-- 4. Entrada Livre na Sala (Open Join vs Solicitação ao Host) -->
-        <div class="cfg-block cfg-row">
-          <div class="ff-label-group">
-            <span class="ff-title">🔓 Entrada Livre na Sala</span>
-            <span id="open-join-status-text" class="ff-subtitle">Desativado (Requer aprovação do criador)</span>
-          </div>
-          <label class="kid-switch" title="Permitir que qualquer pessoa entre sem precisar de aprovação">
-            <input type="checkbox" id="cfg-open-join-toggle" />
-            <span class="kid-slider"></span>
-          </label>
-        </div>
+            <!-- 4. Switch de Fogo Amigo -->
+            <div id="room-ff-row" class="cfg-block cfg-row hidden">
+              <div class="ff-label-group">
+                <span class="ff-title">Fogo Amigo: <strong id="room-ff-state-label">NÃO</strong></span>
+                <span class="ff-subtitle">Empurrar colegas do mesmo time</span>
+              </div>
+              <label class="kid-switch">
+                <input type="checkbox" id="room-friendly-fire-toggle" />
+                <span class="kid-slider"></span>
+              </label>
+            </div>
 
-        <!-- 5. Fogo Amigo (Switch Infantil) -->
-        <div class="cfg-block cfg-row">
-          <div class="ff-label-group">
-            <span class="ff-title">💥 Fogo Amigo</span>
-            <span id="ff-status-text" class="ff-subtitle">Desativado (Protege seu time)</span>
-          </div>
-          <label class="kid-switch" title="Ativar ou Desativar Fogo Amigo">
-            <input type="checkbox" id="friendly-fire-toggle" />
-            <span class="kid-slider"></span>
-          </label>
-        </div>
+            <!-- 5. Velocidade dos Jogadores -->
+            <div class="cfg-block">
+              <label class="cfg-label">Velocidade dos Jogadores:</label>
+              <div class="cfg-pills-row" id="cfg-speed-pills">
+                <button type="button" class="cfg-pill" data-speed="0.8">0.8x Lento</button>
+                <button type="button" class="cfg-pill active" data-speed="1">1.0x Normal</button>
+                <button type="button" class="cfg-pill" data-speed="1.25">1.25x Rápido</button>
+                <button type="button" class="cfg-pill" data-speed="1.5">1.5x Turbo</button>
+              </div>
+            </div>
 
-        <!-- 6. Velocidade dos Jogadores -->
-        <div class="cfg-block">
-          <span class="cfg-label">🏃 Velocidade dos Jogadores:</span>
-          <div class="cfg-pills-row" id="cfg-speed-pills">
-            <button type="button" class="cfg-pill" data-speed="0.85">🐢 Normal</button>
-            <button type="button" class="cfg-pill active" data-speed="1">⚡ Rápido</button>
-            <button type="button" class="cfg-pill" data-speed="1.25">🚀 Turbo</button>
-            <button type="button" class="cfg-pill" data-speed="1.5">🔥 Insano</button>
-          </div>
-        </div>
+            <!-- 6. Tempo de Duração de cada Round -->
+            <div class="cfg-block">
+              <label class="cfg-label">Tempo de Duração da Partida / Round:</label>
+              <div class="cfg-pills-row" id="cfg-duration-pills">
+                <button type="button" class="cfg-pill" data-duration="60">1 min</button>
+                <button type="button" class="cfg-pill" data-duration="120">2 min</button>
+                <button type="button" class="cfg-pill active" data-duration="150">2m 30s</button>
+                <button type="button" class="cfg-pill" data-duration="180">3 min</button>
+                <button type="button" class="cfg-pill" data-duration="300">5 min</button>
+              </div>
+            </div>
 
-        <!-- 7. Tempo de Duração de cada Round -->
-        <div class="cfg-block">
-          <span class="cfg-label">⏱️ Tempo de Duração (por Round):</span>
-          <div class="cfg-pills-row" id="cfg-duration-pills">
-            <button type="button" class="cfg-pill" data-duration="90">1m 30s</button>
-            <button type="button" class="cfg-pill active" data-duration="150">2m 30s</button>
-            <button type="button" class="cfg-pill" data-duration="210">3m 30s</button>
-            <button type="button" class="cfg-pill" data-duration="300">5m 00s</button>
-          </div>
-        </div>
+            <!-- 7. Adicionar Bots (Quantidade) -->
+            <div class="cfg-block cfg-row">
+              <div class="ff-label-group">
+                <span class="ff-title">Adicionar Bots</span>
+                <span class="ff-subtitle">Completa a sala (Máx. 15 no total)</span>
+              </div>
+              <div class="stepper-control">
+                <button type="button" id="btn-bots-minus" class="stepper-btn">−</button>
+                <strong id="cfg-bots-value" class="stepper-val">2</strong>
+                <button type="button" id="btn-bots-plus" class="stepper-btn">+</button>
+              </div>
+            </div>
 
-        <!-- 8. Adicionar Bots (Quantidade) -->
-        <div class="cfg-block cfg-row">
-          <div class="ff-label-group">
-            <span class="ff-title">🤖 Adicionar Bots</span>
-            <span class="ff-subtitle">Quantidade de robôs na partida (0 a 14)</span>
+            <!-- 8. Tempo de Spawn dos Power-ups -->
+            <div id="cfg-powerup-interval-block" class="cfg-block">
+              <label class="cfg-label">Tempo de Spawn dos Power-Ups:</label>
+              <div class="cfg-pills-row" id="cfg-spawn-pills">
+                <button type="button" class="cfg-pill" data-spawn="5">5s</button>
+                <button type="button" class="cfg-pill" data-spawn="10">10s</button>
+                <button type="button" class="cfg-pill active" data-spawn="15">15s</button>
+                <button type="button" class="cfg-pill" data-spawn="20">20s</button>
+                <button type="button" class="cfg-pill" data-spawn="30">30s</button>
+              </div>
+            </div>
           </div>
-          <div class="stepper-control">
-            <button type="button" id="btn-bots-minus" class="stepper-btn">−</button>
-            <span id="cfg-bots-value" class="stepper-val">4</span>
-            <button type="button" id="btn-bots-plus" class="stepper-btn">+</button>
-          </div>
-        </div>
 
-        <!-- 9. Com ou Sem Power-Ups -->
-        <div class="cfg-block cfg-row">
-          <div class="ff-label-group">
-            <span class="ff-title">🎁 Power-Ups na Arena</span>
-            <span id="powerups-status-text" class="ff-subtitle">Ativados</span>
-          </div>
-          <label class="kid-switch" title="Ativar ou Desativar Power-Ups">
-            <input type="checkbox" id="cfg-powerups-toggle" checked />
-            <span class="kid-slider"></span>
-          </label>
-        </div>
+          <!-- COLUNA 2: MAPAS E POWER-UPS AO LADO DAS CONFIGURAÇÕES (OPCIONAIS E TODOS SELECIONADOS POR DEFAULT) -->
+          <div class="config-col-catalogs">
+            <!-- Painel de Mapas da Partida -->
+            <div class="cfg-block cfg-catalog-panel">
+              <div class="cfg-label-row">
+                <label class="cfg-label">Mapas da Partida (Opcionais):</label>
+                <span id="cfg-maps-mode-hint" class="cfg-hint">7/7 selecionados</span>
+              </div>
+              <div class="cfg-catalog-toolbar">
+                <input
+                  type="text"
+                  id="cfg-maps-search"
+                  class="cfg-search-input"
+                  placeholder="Filtrar mapas..."
+                  autocomplete="off"
+                />
+                <div class="cfg-catalog-actions">
+                  <button type="button" id="btn-maps-all" class="cfg-mini-action-btn">Todos</button>
+                  <button type="button" id="btn-maps-none" class="cfg-mini-action-btn">Nenhum</button>
+                </div>
+              </div>
+              <div id="cfg-maps-checklist" class="cfg-maps-checklist"></div>
+            </div>
 
-        <!-- 10. Tempo de Spawn dos Power-Ups -->
-        <div id="cfg-powerup-interval-block" class="cfg-block">
-          <span class="cfg-label">⏳ Tempo de Spawn dos Power-Ups:</span>
-          <div class="cfg-pills-row" id="cfg-spawn-pills">
-            <button type="button" class="cfg-pill" data-spawn="8">8s</button>
-            <button type="button" class="cfg-pill" data-spawn="12">12s</button>
-            <button type="button" class="cfg-pill active" data-spawn="15">15s</button>
-            <button type="button" class="cfg-pill" data-spawn="20">20s</button>
-            <button type="button" class="cfg-pill" data-spawn="30">30s</button>
+            <!-- Painel de Power-Ups da Partida -->
+            <div class="cfg-block cfg-catalog-panel">
+              <div class="cfg-label-row">
+                <label class="cfg-label">Power-Ups da Partida (Opcionais):</label>
+                <span id="cfg-powerups-state" class="cfg-hint">5/5 selecionados</span>
+              </div>
+              <div class="cfg-catalog-toolbar">
+                <input
+                  type="text"
+                  id="cfg-powerups-search"
+                  class="cfg-search-input"
+                  placeholder="Filtrar power-ups..."
+                  autocomplete="off"
+                />
+                <div class="cfg-catalog-actions">
+                  <button type="button" id="btn-powerups-all" class="cfg-mini-action-btn">Todos</button>
+                  <button type="button" id="btn-powerups-none" class="cfg-mini-action-btn">Nenhum</button>
+                </div>
+              </div>
+              <div id="cfg-powerups-checklist" class="cfg-powerups-checklist"></div>
+            </div>
           </div>
         </div>
       </aside>
@@ -471,31 +656,27 @@
   </main>
 
   <!-- ==================================================================== -->
-  <!-- HUD DE PARTIDA EM ANDAMENTO + APRESENTAÇÃO DO MAPA + CONTAGEM 5..1   -->
+  <!-- HUD DE GAMEPLAY (VISÍVEL DURANTE A PARTIDA 3D)                       -->
   <!-- ==================================================================== -->
   <section id="match-hud" class="match-hud hidden">
-    <div class="hud-top-bar">
+    <!-- Barra Superior da Partida (Sem velocidade e sem modo de jogo; box de mapa compacto no celular) -->
+    <div id="hud-top-bar" class="hud-top-bar">
       <div class="hud-map-badge">
-        <strong id="hud-map-name">Arena Clássica</strong>
-        <span id="hud-map-desc">Cuidado com as bordas!</span>
+        <strong id="hud-map-name">Arena Hexagonal</strong>
+        <span id="hud-map-desc">Empurre seus rivais para fora!</span>
       </div>
 
       <div class="hud-stats-pills">
-        <!-- Indicador do Round Atual e Placar de Rounds -->
-        <div id="hud-round-pill" class="hud-pill">🏆 Round: <strong id="hud-round-text">1/3</strong></div>
-        <div class="hud-pill">⏱️ Tempo: <strong id="hud-match-timer">02:30</strong></div>
-        <!-- Cronômetro "Novo Power-Up" indicando quanto tempo falta para o próximo power-up -->
-        <div id="hud-powerup-timer-pill" class="hud-pill powerup-pill">
-          🎁 Novo Power-Up: <strong id="hud-powerup-timer">15s</strong>
-        </div>
-        <div class="hud-pill">🏃 Vel: <strong id="hud-speed-mult">1.0x</strong></div>
-        <div class="hud-pill">👥 Vivos: <strong id="hud-alive-count">15</strong></div>
-        <div class="hud-pill accent">🥊 Shoves: <strong id="hud-shove-count">0</strong></div>
+        <span id="hud-round-pill" class="hud-pill">Round 1/3</span>
+        <span id="hud-timer-pill" class="hud-pill">02:30</span>
+        <span id="hud-powerup-timer-pill" class="hud-pill powerup-pill">Power-Up: 15s</span>
+        <span id="hud-alive-pill" class="hud-pill accent">15 Vivos</span>
+        <button type="button" id="btn-hud-sound" class="hud-quit-btn hud-icon-btn"></button>
         <button type="button" id="btn-quit-match" class="hud-quit-btn">Sair</button>
       </div>
     </div>
 
-    <!-- APRESENTAÇÃO DO MAPA ANTES DE INICIAR O ROUND -->
+    <!-- APRESENTAÇÃO DO MAPA ANTES DO ROUND COMEÇAR (Compactada no celular) -->
     <div id="map-presentation-overlay" class="map-presentation-overlay hidden">
       <div class="map-presentation-card">
         <span id="presentation-round-badge" class="presentation-round-badge">ROUND 1 DE 3</span>
@@ -507,23 +688,23 @@
     <!-- CONTAGEM REGRESSIVA GRANDE DE 5 SEGUNDOS: 5, 4, 3, 2, 1 - SHOVE! -->
     <div id="big-countdown-overlay" class="big-countdown-overlay hidden">
       <div id="big-countdown-text" class="big-countdown-text">5</div>
-      <div class="big-countdown-sub">Prepare-se! Empurrão liberado no SHOVE!</div>
+      <div class="big-countdown-sub">Prepare-se! A briga vai começar...</div>
     </div>
 
     <!-- Banner de Alerta de Escapar quando Levantado -->
     <div id="hud-escape-banner" class="hud-escape-banner hidden">
-      ⚠️ <strong>VOCÊ FOI LEVANTADO!</strong> Aperte <strong>EMPURRAR</strong> rápido para escapar e atordoar!
+      <strong>VOCÊ FOI LEVANTADO!</strong> Aperte <strong>EMPURRAR</strong> rápido para escapar!
       (<span id="hud-escape-counter">0/5</span>)
     </div>
 
     <div id="hud-powerup-toast" class="hud-powerup-toast hidden"></div>
 
-    <!-- Feed do Canto Direito (MOSTRA APENAS JOGADORES ELIMINADOS E QUEM OS ELIMINOU) -->
+    <!-- Feed do Canto Direito (Oculto automaticamente quando o usuário estiver no celular) -->
     <div id="kill-feed" class="kill-feed"></div>
 
-    <!-- Barra Central de Carregamento de Força -->
-    <div id="hud-charge-container" class="hud-charge-container">
-      <div class="hud-charge-label">FORÇA DO EMPURRÃO / ARREMESSO</div>
+    <!-- Barra de Carregamento "FORÇA" que flutua em cima da cabeça do personagem -->
+    <div id="hud-charge-container" class="hud-charge-container hidden">
+      <div class="hud-charge-label">FORÇA</div>
       <div class="hud-charge-track">
         <div id="hud-charge-fill" class="hud-charge-fill"></div>
       </div>
@@ -537,10 +718,10 @@
 
       <div class="mobile-action-buttons">
         <button type="button" id="btn-mobile-grab" class="mobile-grab-btn">
-          🤲<br />SEGURAR
+          SEGURAR
         </button>
         <button type="button" id="btn-mobile-shove" class="mobile-shove-btn">
-          🥊<br />SHOVE!
+          SHOVE!
         </button>
       </div>
     </div>
@@ -551,23 +732,13 @@
   <!-- ==================================================================== -->
   <section id="victory-screen-overlay" class="victory-screen-overlay hidden">
     <div class="victory-top-banner">
-      <h2 id="result-winner-title">🏆 FIM DE PARTIDA!</h2>
-      <p id="result-winner-subtitle">Os campeões dominaram a arena!</p>
+      <h2 id="result-winner-title">FIM DE PARTIDA!</h2>
     </div>
 
-    <div class="victory-sides-labels">
-      <div class="victory-side-box winners-side">
-        <span class="side-badge win">👑 VENCEDORES</span>
-      </div>
-      <div class="victory-side-box losers-side">
-        <span class="side-badge lose">💫 PERDEDORES</span>
-      </div>
-    </div>
-
-    <!-- Card de Dados de XP e Nível Ganho pelo Usuário na Partida -->
+    <!-- Card Original de Dados de XP e Bônus Ganhos pelo Usuário na Partida -->
     <div id="victory-xp-card" class="victory-xp-card">
       <div class="xp-card-header">
-        <strong id="xp-card-level">⭐ Nível 1</strong>
+        <strong id="xp-card-level">Nível 1</strong>
         <span id="xp-card-total-gained" class="xp-gained-badge">+0 XP</span>
       </div>
       <div class="xp-bar-track">
@@ -575,20 +746,60 @@
       </div>
       <div id="xp-card-progress-text" class="xp-progress-text">0 / 200 XP para o próximo nível</div>
       <div id="xp-card-breakdown" class="xp-breakdown-row">
-        <span>🥊 Shoves: +0 XP</span>
-        <span>💥 Kills: +0 XP</span>
-        <span>🏆 Partida: +0 XP</span>
+        <span>Shoves: +0 XP</span>
+        <span>Kills: +0 XP</span>
+        <span>Partida: +0 XP</span>
       </div>
     </div>
 
-    <!-- Botão no Canto Inferior Direito (VOLTAR PARA O LOBBY) -->
     <button type="button" id="btn-back-to-lobby" class="btn-success btn-3d victory-bottom-right-btn">
-      VOLTAR PARA O LOBBY
+      VOLTAR PARA A SALA
     </button>
   </section>
 
+  <!-- Chat em Memória da Sala e da Partida (Ativo ao criar/entrar na sala, oculto ao sair) -->
+  <aside id="room-chat-widget" class="room-chat-widget hidden" aria-label="Chat da Sala">
+    <div id="room-chat-header" class="room-chat-header">
+      <div class="room-chat-title-wrap">
+        <span class="room-chat-live-dot"></span>
+        <span id="room-chat-title">CHAT DA SALA</span>
+        <span id="room-chat-unread-badge" class="room-chat-unread-badge hidden">0</span>
+      </div>
+      <button type="button" id="btn-toggle-room-chat" class="btn-toggle-room-chat" title="Minimizar/Expandir Chat">
+        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+    </div>
+
+    <div id="room-chat-body" class="room-chat-body">
+      <div id="room-chat-messages" class="room-chat-messages">
+        <div class="room-chat-empty">Histórico temporário da sala (máx. 100 caracteres por mensagem).</div>
+      </div>
+
+      <form id="room-chat-form" class="room-chat-form" autocomplete="off">
+        <input
+          type="text"
+          id="room-chat-input"
+          class="room-chat-input"
+          placeholder="Mensagem (máx. 100)..."
+          maxlength="100"
+        />
+        <span id="room-chat-char-count" class="room-chat-char-count">0/100</span>
+        <button type="submit" id="btn-send-room-chat" class="btn-send-room-chat" title="Enviar mensagem">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="lucide-icon">
+            <path d="m22 2-7 20-4-9-9-4Z" />
+            <path d="M22 2 11 13" />
+          </svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script type="module" src="/js/ui/LoginScreen.js?v=8.2"></script>
+  <script type="module" src="/js/ui/LoginScreen.js"></script>
 </body>
 
 </html>

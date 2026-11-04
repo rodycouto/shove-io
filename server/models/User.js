@@ -1,8 +1,9 @@
 // server/models/User.js
 // ============================================================================
 // Schema Mongoose para persistência de usuários registrados no MongoDB.
-// Armazena credenciais, cor escolhida do Shover, lista de amigos (nicknames),
-// estatísticas acumuladas (vitórias, partidas, shoves, kills) e Nível/XP.
+// A lista de amigos (`friends`) e de solicitações (`friendRequests`) armazena
+// APENAS o ID do usuário (String), garantindo que nickname, cor e nível sejam
+// sempre consultados em tempo real e nunca fiquem desatualizados.
 // ============================================================================
 
 const mongoose = require('mongoose');
@@ -31,11 +32,6 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: '#FF3366'
   },
-  // Lista de amigos (armazena os nicknames adicionados pelo jogador)
-  friends: {
-    type: [String],
-    default: []
-  },
   stats: {
     wins: { type: Number, default: 0 },
     shoves: { type: Number, default: 0 },
@@ -43,6 +39,14 @@ const UserSchema = new mongoose.Schema({
     matches: { type: Number, default: 0 },
     xp: { type: Number, default: 0 },
     level: { type: Number, default: 1 }
+  },
+  friends: {
+    type: [String],
+    default: []
+  },
+  friendRequests: {
+    type: [String],
+    default: []
   },
   createdAt: {
     type: Date,
