@@ -1,23 +1,73 @@
 {
   "name": "shove-io",
   "version": "1.1.0",
-  "description": "Shove.io - 3D Multiplayer Arena Brawl Game (Optimized)",
-  "main": "server/index.js",
+  "description": "Shove.io Arena 3D - Jogo Multiplayer, Portal Web e App Desktop (Steam / Windows)",
+  "main": "desktop/main.js",
+  "author": "rodycouto",
+  "license": "MIT",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "app:dev": "electron .",
+    "app:pack": "electron-builder --dir",
+    "app:dist": "electron-builder --win --x64",
+    "app:publish": "electron-builder --win --x64 --publish always",
+    "app:fix-electron": "node node_modules/electron/install.js"
   },
   "dependencies": {
-    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "electron-updater": "^6.3.9",
     "express": "^4.19.2",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.0",
     "socket.io": "^4.7.5",
     "three": "^0.167.0"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^25.1.0"
+  },
+  "build": {
+    "appId": "com.shoveio.arena3d",
+    "productName": "Shove.io Arena",
+    "files": [
+      "desktop/**/*",
+      "client/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "rodycouto",
+        "repo": "shove-io",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Shove.io-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Shove.io Arena"
+    },
+    "directories": {
+      "output": "release-build"
+    }
   }
 }

@@ -1,24 +1,35 @@
 // server/config/env.js
 // ============================================================================
 // Módulo responsável por carregar e validar as variáveis de ambiente (.env).
-// Inclui suporte completo às credenciais do Redis 8.0 na rede VLAN da Discloud
-// sem expor credenciais sensíveis hardcoded no código-fonte.
+// Inclui configurações da API na Discloud, MongoDB, Redis Cache (Ranking 60s),
+// Controle de Versão do App Desktop e URL do Instalador no GitHub Releases.
 // ============================================================================
 
 const path = require('path');
 const dotenv = require('dotenv');
+const pkg = require('../../package.json');
 
-// Garante a leitura do .env na raiz do projeto
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
-// No Redis o comando SELECT aceita apenas inteiros (0 a 15).
-// Se alguém definir REDIS_DB="shove" por engano, converte para 0 com segurança.
 const parsedRedisDb = Number.parseInt(process.env.REDIS_DB, 10);
+const ghOwner = process.env.GITHUB_REPO_OWNER || 'SEU_USUARIO_GITHUB';
+const ghRepo = process.env.GITHUB_REPO_NAME || 'shove-io';
+const defaultWinUrl = `https://github.com/${ghOwner}/${ghRepo}/releases/latest/download/Shove.io-Setup-${process.env.APP_VERSION || pkg.version || '1.1.0'}.exe`;
 
 const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   PORT: Number(process.env.PORT) || 8080,
   CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
+  PUBLIC_API_URL: process.env.PUBLIC_API_URL || 'https://shove.discloud.dev',
+
+  // Controle de Versão, Auto-Update e Download do App Desktop (GitHub Releases)
+  APP_VERSION: process.env.APP_VERSION || pkg.version || '1.1.0',
+  MIN_APP_VERSION: process.env.MIN_APP_VERSION || process.env.APP_VERSION || pkg.version || '1.1.0',
+  GITHUB_REPO_OWNER: ghOwner,
+  GITHUB_REPO_NAME: ghRepo,
+  DOWNLOAD_WINDOWS_URL: process.env.DOWNLOAD_WINDOWS_URL || defaultWinUrl,
+  ADMIN_UPDATE_SECRET: process.env.ADMIN_UPDATE_SECRET || 'shove_admin_update_secret',
+  RANKING_CACHE_TTL_SEC: Number(process.env.RANKING_CACHE_TTL_SEC) || 60,
 
   // MongoDB (Atlas Cloud ou Local)
   MONGO_URI: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/shove_io',

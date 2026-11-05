@@ -2367,3 +2367,271 @@ html, body {
     height: 165px;
   }
 }
+
+
+/* ==========================================================================
+   LOADING INICIAL ESTILO CLASH ROYALE / BRAWL STARS + BLOQUEIO DE VERSÃO
+   ========================================================================== */
+.cr-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: radial-gradient(circle at 50% 38%, #1a2142 0%, #070812 75%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 48px 20px 28px 20px;
+  transition: opacity 0.35s ease;
+}
+
+.cr-loading-overlay.hidden {
+  display: none !important;
+}
+
+.cr-loading-center {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 460px;
+  width: 100%;
+}
+
+.cr-logo {
+  font-size: clamp(2.8rem, 8vw, 4.4rem);
+  margin: 6px 0;
+}
+
+.cr-tagline {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 18px;
+}
+
+.cr-update-lock-box {
+  width: 100%;
+  background: rgba(16, 20, 38, 0.95);
+  border: 2px solid #ffd600;
+  border-radius: 18px;
+  padding: 16px;
+  margin-top: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+}
+
+.cr-update-lock-title {
+  display: block;
+  font-size: 0.96rem;
+  font-weight: 900;
+  color: #ffd600;
+  margin-bottom: 6px;
+}
+
+.cr-update-lock-desc {
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+
+.cr-update-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cr-update-actions a {
+  text-decoration: none;
+}
+
+.cr-loading-bottom {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.cr-loading-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.cr-loading-bar-track {
+  width: 100%;
+  height: 16px;
+  background: rgba(10, 13, 26, 0.92);
+  border: 2px solid rgba(0, 229, 255, 0.5);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.cr-loading-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00e5ff, #00e676, #ffd600);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.cr-loading-version-footer {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* Modal de Atualização ao Vivo (Para jogadores que já estão online) */
+.live-update-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(5, 7, 15, 0.86);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.live-update-card {
+  max-width: 420px;
+  text-align: center;
+  border-color: #ffd600;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-update-title {
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: #ffd600;
+}
+
+.live-update-notes {
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  line-height: 1.4;
+}
+
+.live-update-progress-box {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.live-update-btns {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* Banner de Download do App Desktop (.EXE) no Site */
+.portal-download-banner {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.btn-download-exe {
+  background: linear-gradient(135deg, #00e676, #00b0ff);
+  color: #041f14;
+  box-shadow: 0 5px 0 #008a4c;
+  text-decoration: none;
+  padding: 9px 18px;
+  font-size: 0.82rem;
+  font-weight: 900;
+  border-radius: 999px;
+}
+
+.btn-download-exe:hover {
+  filter: brightness(1.08);
+}
+
+.portal-version-badge {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #ffd600;
+}
+
+/* 4 Abas no Portal (Jogar | Ranking | Amigos | Controles) */
+.lobby-nav-tabs.four-tabs {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* Tabela Única de Ranking Global (Cache Redis 60s) */
+.ranking-table-wrap {
+  max-height: 255px;
+  overflow-y: auto;
+  border-radius: 10px;
+}
+
+.ranking-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+}
+
+.ranking-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  position: sticky;
+  top: 0;
+  background: rgba(10, 12, 24, 0.96);
+}
+
+.ranking-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.ranking-table tr.is-me {
+  background: rgba(0, 229, 255, 0.14);
+}
+
+.rank-pos-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+}
+
+.rank-pos-badge.top-1 {
+  background: linear-gradient(135deg, #ffd600, #ff9100);
+  color: #1f1400;
+}
+
+.rank-pos-badge.top-2 {
+  background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+  color: #0f172a;
+}
+
+.rank-pos-badge.top-3 {
+  background: linear-gradient(135deg, #f59e0b, #b45309);
+  color: #ffffff;
+}

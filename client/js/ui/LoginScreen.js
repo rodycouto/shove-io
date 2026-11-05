@@ -62,9 +62,279 @@ class LoginScreenController {
     this.bindRoomChatEvents();
     this.bindSettingsEvents();
     this.bindSocketEvents();
+    this.initAppUpdaterAndPortal();
     this.renderControlLabels();
     this.updateSoundButtonsUI();
     this.restoreSession();
+    this.runInitialLoadingFlow();
+  }
+
+  initAppUpdaterAndPortal() {
+    this.clientAppVersion = localStorage.getItem('shove_installed_version') || '1.1.0';
+    this.crLoadingOverlay = document.getElementById('cr-loading-overlay');
+    this.crLoadingStatusText = document.getElementById('cr-loading-status-text');
+    this.crLoadingPct = document.getElementById('cr-loading-pct');
+    this.crLoadingBarFill = document.getElementById('cr-loading-bar-fill');
+    this.crVersionLabel = document.getElementById('cr-version-label');
+    this.crUpdateLockBox = document.getElementById('cr-update-lock-box');
+    this.crUpdateLockTitle = document.getElementById('cr-update-lock-title');
+    this.crUpdateLockDesc = document.getElementById('cr-update-lock-desc');
+    this.btnCrUpdateNow = document.getElementById('btn-cr-update-now');
+    this.linkCrDownloadInstaller = document.getElementById('link-cr-download-installer');
+
+    this.liveUpdateModal = document.getElementById('live-update-modal');
+    this.liveUpdateTitle = document.getElementById('live-update-title');
+    this.liveUpdateNotes = document.getElementById('live-update-notes');
+    this.liveUpdateProgressBox = document.getElementById('live-update-progress-box');
+    this.liveUpdateProgressLabel = document.getElementById('live-update-progress-label');
+    this.liveUpdateProgressPct = document.getElementById('live-update-progress-pct');
+    this.liveUpdateProgressFill = document.getElementById('live-update-progress-fill');
+    this.btnLiveUpdateNow = document.getElementById('btn-live-update-now');
+
+    this.portalDownloadBanner = document.getElementById('portal-download-banner');
+    this.btnDownloadDesktopApp = document.getElementById('btn-download-desktop-app');
+    this.portalVersionBadge = document.getElementById('portal-version-badge');
+
+    this.lobbyViewRanking = document.getElementById('lobby-view-ranking');
+    this.rankingTableBody = document.getElementById('ranking-table-body');
+    this.btnRefreshRanking = document.getElementById('btn-refresh-ranking');
+
+    // Se estiver rodando dentro do App Desktop Electron, oculta o banner de baixar .exe do site
+    if (window.shoveDesktop?.isDesktopApp) {
+      if (this.portalDownloadBanner) {
+        this.portalDownloadBanner.classList.add('hidden');
+      }
+      window.shoveDesktop.getInfo().then((info) => {
+        if (info?.appVersion) {
+          this.clientAppVersion = info.appVersion;
+          if (this.crVersionLabel) {
+            this.crVersionLabel.textContent = `App Desktop v${info.appVersion}`;
+          }
+        }
+      });
+
+      window.shoveDesktop.onUpdaterStatus((ev) => {
+        if (!ev) return;
+        if (ev.status === 'downloading') {
+          const pct = Math.max(5, Math.min(99, Number(ev.percent) || 0));
+          this.setCrLoadingProgress(pct, `Baixando atualização... ${pct}%`);
+          if (this.liveUpdateProgressBox) {
+            this.liveUpdateProgressBox.classList.remove('hidden');
+            this.liveUpdateProgressPct.textContent = `${pct}%`;
+            this.liveUpdateProgressFill.style.width = `${pct}%`;
+          }
+        } else if (ev.status === 'downloaded') {
+          this.setCrLoadingProgress(100, 'Atualização concluída! Reiniciando o jogo...');
+          setTimeout(() => {
+            window.shoveDesktop.quitAndInstall();
+          }, 700);
+        }
+      });
+    }
+
+    if (this.btnCrUpdateNow) {
+      this.btnCrUpdateNow.addEventListener('click', () => {
+        this.triggerClientUpdateAndRestart();
+      });
+    }
+
+    if (this.btnLiveUpdateNow) {
+      this.btnLiveUpdateNow.addEventListener('click', () => {
+        this.triggerClientUpdateAndRestart();
+      });
+    }
+
+    if (this.btnRefreshRanking) {
+      this.btnRefreshRanking.addEventListener('click', () => {
+        this.soundManager.playClick();
+        this.fetchAndRenderRanking();
+      });
+    }
+  }
+
+  setCrLoadingProgress(pct, statusText) {
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+    if (this.crLoadingPct) this.crLoadingPct.textContent = `${clamped}%`;
+    if (this.crLoadingBarFill) this.crLoadingBarFill.style.width = `${clamped}%`;
+    if (statusText && this.crLoadingStatusText) {
+      this.crLoadingStatusText.textContent = statusText;
+    }
+  }
+
+  applyServerVersionMetadata(verState) {
+    if (!verState) return;
+    this.latestServerVersion = verState.currentVersion || '1.1.0';
+    if (verState.downloadUrl && this.btnDownloadDesktopApp) {
+      this.btnDownloadDesktopApp.href = verState.downloadUrl;
+    }
+    if (verState.downloadUrl && this.linkCrDownloadInstaller) {
+      this.linkCrDownloadInstaller.href = verState.downloadUrl;
+    }
+    if (this.portalVersionBadge && verState.currentVersion) {
+      this.portalVersionBadge.textContent = `v${verState.currentVersion} • Windows / Em breve na Steam`;
+    }
+  }
+
+  /**
+   * Executa o Loading Inicial estilo Clash Royale / Brawl Stars:
+   * - Verifica na API (/api/app/version) e no Electron se há atualização disponível
+   * - Se houver atualização obrigatória, bloqueia na tela de loading e inicia a atualização
+   * - Caso contrário, carrega o Ranking do Redis e libera a entrada no jogo
+   */
+  async runInitialLoadingFlow() {
+    if (!this.crLoadingOverlay) return;
+    this.setCrLoadingProgress(20, 'Verificando atualizações...');
+
+    try {
+      if (window.shoveDesktop?.isDesktopApp) {
+        const info = await window.shoveDesktop.getInfo();
+        if (info?.appVersion) {
+          this.clientAppVersion = info.appVersion;
+        }
+      }
+
+      const res = await fetch(
+        `/api/app/version?clientVersion=${encodeURIComponent(this.clientAppVersion)}`
+      );
+      if (res.ok) {
+        const verData = await res.json();
+        this.applyServerVersionMetadata(verData);
+
+        const storedVer = localStorage.getItem('shove_installed_version');
+        if (!storedVer) {
+          localStorage.setItem('shove_installed_version', verData.currentVersion || '1.1.0');
+          this.clientAppVersion = verData.currentVersion || '1.1.0';
+        }
+
+        if (verData.updateRequired || (window.shoveDesktop?.isDesktopApp && verData.updateAvailable)) {
+          this.lockLoadingForUpdate(verData);
+          return;
+        }
+      }
+    } catch (_) {}
+
+    this.setCrLoadingProgress(65, 'Sincronizando Ranking e Perfil...');
+    await this.fetchAndRenderRanking();
+
+    this.setCrLoadingProgress(100, 'Pronto para a Batalha!');
+    setTimeout(() => {
+      if (this.crLoadingOverlay) {
+        this.crLoadingOverlay.classList.add('hidden');
+      }
+    }, 320);
+  }
+
+  lockLoadingForUpdate(verData) {
+    this.setCrLoadingProgress(40, `Nova versão v${verData.currentVersion} encontrada!`);
+    if (this.crUpdateLockBox) {
+      this.crUpdateLockBox.classList.remove('hidden');
+    }
+    if (this.crUpdateLockTitle) {
+      this.crUpdateLockTitle.textContent = `ATUALIZAÇÃO v${verData.currentVersion} DISPONÍVEL!`;
+    }
+    if (this.crUpdateLockDesc) {
+      this.crUpdateLockDesc.textContent =
+        verData.releaseNotes ||
+        'Uma nova versão do Shove.io foi publicada. Atualize agora para entrar no jogo!';
+    }
+    if (this.linkCrDownloadInstaller && verData.downloadUrl) {
+      this.linkCrDownloadInstaller.href = verData.downloadUrl;
+      this.linkCrDownloadInstaller.classList.remove('hidden');
+    }
+
+    // No App Desktop Electron, inicia o download automático já no loading (estilo Clash Royale)
+    if (window.shoveDesktop?.isDesktopApp) {
+      this.setCrLoadingProgress(50, 'Baixando atualização automática...');
+      window.shoveDesktop.startUpdate();
+    }
+  }
+
+  showLiveUpdateModal(verState) {
+    if (!verState) return;
+    this.applyServerVersionMetadata(verState);
+    if (this.liveUpdateTitle) {
+      this.liveUpdateTitle.textContent = `ATUALIZAÇÃO v${verState.currentVersion} DISPONÍVEL!`;
+    }
+    if (this.liveUpdateNotes) {
+      this.liveUpdateNotes.textContent =
+        verState.releaseNotes ||
+        'Uma nova atualização acabou de subir no servidor! Clique abaixo para atualizar seu jogo agora.';
+    }
+    if (this.liveUpdateModal) {
+      this.liveUpdateModal.classList.remove('hidden');
+    }
+  }
+
+  async triggerClientUpdateAndRestart() {
+    if (this.latestServerVersion) {
+      localStorage.setItem('shove_installed_version', this.latestServerVersion);
+    }
+
+    if (window.shoveDesktop?.isDesktopApp) {
+      if (this.liveUpdateProgressBox) {
+        this.liveUpdateProgressBox.classList.remove('hidden');
+      }
+      await window.shoveDesktop.startUpdate();
+      return;
+    }
+
+    // No navegador/site, recarrega com cache-busting para aplicar a nova versão imediatamente
+    const url = new URL(window.location.href);
+    url.searchParams.set('v', this.latestServerVersion || Date.now());
+    window.location.replace(url.toString());
+  }
+
+  async fetchAndRenderRanking() {
+    try {
+      const res = await fetch('/api/ranking');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.ranking)) {
+        this.renderRankingTable(data.ranking);
+      }
+    } catch (_) {}
+  }
+
+  renderRankingTable(rankingList = []) {
+    if (!this.rankingTableBody) return;
+    this.rankingTableBody.innerHTML = '';
+
+    if (rankingList.length === 0) {
+      this.rankingTableBody.innerHTML =
+        '<tr><td colspan="5" class="empty-rooms-msg">Nenhum jogador no ranking ainda. Jogue uma partida!</td></tr>';
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    const myId = this.currentUser?.id;
+
+    rankingList.forEach((item, idx) => {
+      const rankNum = item.rank || idx + 1;
+      const tr = document.createElement('tr');
+      if (myId && item.userId === myId) {
+        tr.className = 'is-me';
+      }
+
+      const badgeClass =
+        rankNum === 1 ? 'top-1' : rankNum === 2 ? 'top-2' : rankNum === 3 ? 'top-3' : '';
+
+      tr.innerHTML = `
+        <td><span class="rank-pos-badge ${badgeClass}">#${rankNum}</span></td>
+        <td>
+          <span class="icon-text-inline">
+            <span class="dot" style="width:9px;height:9px;border-radius:50%;display:inline-block;background:${item.skinColor || '#FF3366'}"></span>
+            <span class="player-name-truncate">${item.username}</span>
+            <span class="player-level-tag">Nv. ${item.level || 1}</span>
+          </span>
+        </td>
+        <td>${item.wins || 0}</td>
+        <td>${item.kills || 0}</td>
+        <td>${item.xp || 0}</td>
+      `;
+      frag.appendChild(tr);
+    });
+
+    this.rankingTableBody.appendChild(frag);
   }
 
   initRoomChatDOM() {
@@ -655,6 +925,9 @@ class LoginScreenController {
         btn.classList.add('active');
         const target = btn.dataset.lobbyTab;
         this.lobbyViewPlay.classList.toggle('hidden', target !== 'play');
+        if (this.lobbyViewRanking) {
+          this.lobbyViewRanking.classList.toggle('hidden', target !== 'ranking');
+        }
         if (this.lobbyViewFriends) {
           this.lobbyViewFriends.classList.toggle('hidden', target !== 'friends');
         }
@@ -664,6 +937,9 @@ class LoginScreenController {
 
         if (target === 'friends' && this.currentUser) {
           this.socket.emit('friends:get', { userId: this.currentUser.id });
+        }
+        if (target === 'ranking') {
+          this.fetchAndRenderRanking();
         }
       });
     });
@@ -939,6 +1215,7 @@ class LoginScreenController {
             b.classList.toggle('active', b.dataset.lobbyTab === 'play');
           });
           this.lobbyViewPlay.classList.remove('hidden');
+          if (this.lobbyViewRanking) this.lobbyViewRanking.classList.add('hidden');
           this.lobbyViewFriends.classList.add('hidden');
           this.joinRoomByCode(f.roomId);
         });
@@ -1226,6 +1503,22 @@ class LoginScreenController {
 
     this.socket.on('friends:updated', (data) => {
       this.renderFriendsState(data);
+    });
+
+    this.socket.on('ranking:updated', (data) => {
+      if (data && Array.isArray(data.ranking)) {
+        this.renderRankingTable(data.ranking);
+      }
+    });
+
+    this.socket.on('app:version_info', (verState) => {
+      if (verState) {
+        this.applyServerVersionMetadata(verState);
+      }
+    });
+
+    this.socket.on('app:update_available', (verState) => {
+      this.showLiveUpdateModal(verState);
     });
 
     this.socket.on('rooms:list', (list) => {

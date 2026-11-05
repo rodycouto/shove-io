@@ -16,7 +16,12 @@ const { Server } = require('socket.io');
 
 const ENV = require('./config/env');
 const { connectDB } = require('./config/db');
-const { connectRedis, getRedisStatus } = require('./config/redis');
+const {
+  connectRedis,
+  getRedisStatus,
+  cacheAppVersionInRedis,
+  getCachedAppVersionFromRedis
+} = require('./config/redis');
 const authRoutes = require('./routes/authRoutes');
 const RoomManager = require('./managers/RoomManager');
 
@@ -63,6 +68,102 @@ app.use(
 );
 
 app.use('/api/auth', authRoutes);
+
+// ============================================================================
+// CONTROLE DE VERSÃO DO APP DESKTOP E BROADCAST DE ATUALIZAÇÃO EM TEMPO REAL
+// ============================================================================
+let appVersionState = {
+  currentVersion: ENV.APP_VERSION,
+  minVersion: ENV.MIN_APP_VERSION,
+  downloadUrl: ENV.DOWNLOAD_WINDOWS_URL,
+  releaseNotes: 'Melhorias de desempenho, física 100% em RAM, novo mapa Lua Cintilante e Ranking Global!',
+  updatedAt: Date.now()
+};
+
+function compareSemver(vA = '1.0.0', vB = '1.0.0') {
+  const partsA = String(vA).replace(/[^0-9.]/g, '').split('.').map(Number);
+  const partsB = String(vB).replace(/[^0-9.]/g, '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const a = partsA[i] || 0;
+    const b = partsB[i] || 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  return 0;
+}
+
+// GET /api/app/version — Consultado no Loading Inicial (estilo Clash Royale / Brawl Stars)
+app.get('/api/app/version', async (req, res) => {
+  const clientVersion = String(req.query.clientVersion || '').trim();
+  const cachedVer = await getCachedAppVersionFromRedis();
+  if (cachedVer && cachedVer.currentVersion) {
+    if (compareSemver(ENV.APP_VERSION, cachedVer.currentVersion) > 0) {
+      appVersionState.currentVersion = ENV.APP_VERSION;
+      appVersionState.minVersion = ENV.MIN_APP_VERSION;
+      await cacheAppVersionInRedis(appVersionState);
+    } else {
+      appVersionState = cachedVer;
+    }
+  }
+
+  const updateRequired = clientVersion
+    ? compareSemver(clientVersion, appVersionState.minVersion) < 0
+    : false;
+  const updateAvailable = clientVersion
+    ? compareSemver(clientVersion, appVersionState.currentVersion) < 0
+    : false;
+
+  res.json({
+    ...appVersionState,
+    clientVersion: clientVersion || null,
+    updateRequired,
+    updateAvailable
+  });
+});
+
+// POST /api/app/publish-update — Dispara aviso em tempo real para TODOS os usuários online
+app.post('/api/app/publish-update', async (req, res) => {
+  const secret = req.headers['x-admin-secret'] || req.body?.secret;
+  if (secret !== ENV.ADMIN_UPDATE_SECRET) {
+    return res.status(403).json({ error: 'Chave administrativa inválida.' });
+  }
+
+  const nextVersion = String(req.body?.version || ENV.APP_VERSION).trim();
+  const nextMinVersion = String(req.body?.minVersion || nextVersion).trim();
+  const nextDownloadUrl = String(req.body?.downloadUrl || appVersionState.downloadUrl).trim();
+  const nextNotes = String(
+    req.body?.releaseNotes || `Nova versão ${nextVersion} disponível! Atualize agora para continuar jogando.`
+  ).trim();
+
+  appVersionState = {
+    currentVersion: nextVersion,
+    minVersion: nextMinVersion,
+    downloadUrl: nextDownloadUrl,
+    releaseNotes: nextNotes,
+    updatedAt: Date.now()
+  };
+
+  await cacheAppVersionInRedis(appVersionState);
+
+  // Avisa imediatamente todos os jogadores que já estão online (Lobby, Salas e Partidas)
+  io.emit('app:update_available', appVersionState);
+
+  return res.json({
+    success: true,
+    message: `Atualização v${nextVersion} publicada e enviada para todos os jogadores online!`,
+    versionState: appVersionState
+  });
+});
+
+// GET /api/ranking — Retorna a Tabela Única de Ranking (Cacheada no Redis por 60s)
+app.get('/api/ranking', async (req, res) => {
+  try {
+    const data = await authRoutes.getGlobalRanking(false);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao carregar o ranking.' });
+  }
+});
 
 const roomManager = new RoomManager(io);
 
@@ -160,6 +261,17 @@ if (typeof onlineCountInterval.unref === 'function') {
   onlineCountInterval.unref();
 }
 
+// Atualização automática da Tabela Única de Ranking no Redis a cada 60 segundos (60000ms)
+const rankingRefreshInterval = setInterval(async () => {
+  try {
+    const freshRanking = await authRoutes.getGlobalRanking(true);
+    io.to('lobby').emit('ranking:updated', freshRanking);
+  } catch (_) {}
+}, (ENV.RANKING_CACHE_TTL_SEC || 60) * 1000);
+if (typeof rankingRefreshInterval.unref === 'function') {
+  rankingRefreshInterval.unref();
+}
+
 async function emitFriendsStateToUser(userId) {
   if (!userId) return;
   const socketIds = onlineUsersMap.get(userId);
@@ -203,6 +315,7 @@ io.on('connection', (socket) => {
 
   socket.emit('rooms:list', roomManager.getPublicRoomsList());
   socket.emit('server:online_count', { onlineCount: getOnlinePlayersCount() });
+  socket.emit('app:version_info', appVersionState);
 
   // 0. Medidor de Ping ultra-leve (sem payload extra para diminuir o ping)
   socket.on('ping:check', (callback) => {
@@ -286,6 +399,12 @@ io.on('connection', (socket) => {
       }
     }
     if (typeof callback === 'function') callback(result);
+  });
+
+  // 0.6 Buscar Tabela Única de Ranking (do Cache Redis 60s)
+  socket.on('ranking:get', async (callback) => {
+    const data = await authRoutes.getGlobalRanking(false);
+    if (typeof callback === 'function') callback(data);
   });
 
   // 1. Buscar lista atualizada de salas criadas ao redor do jogo
@@ -399,6 +518,8 @@ io.on('connection', (socket) => {
 async function bootstrapServer() {
   await connectDB();
   await connectRedis();
+  await cacheAppVersionInRedis(appVersionState);
+  await authRoutes.getGlobalRanking(true);
 
   // Nota de Desempenho: NÃO acoplamos @socket.io/redis-adapter ao Socket.io!
   // Assim, todos os pacotes de física (30Hz), empurrões e eventos da partida

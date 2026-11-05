@@ -17,7 +17,9 @@ const { getDbStatus } = require('../config/db');
 const {
   cacheUserInRedis,
   getCachedUserFromRedis,
-  getCachedUserIdByUsername
+  getCachedUserIdByUsername,
+  cacheRankingInRedis,
+  getCachedRankingFromRedis
 } = require('../config/redis');
 const ENV = require('../config/env');
 
@@ -658,6 +660,138 @@ router.post('/guest', (req, res) => {
   return res.json({ token: generateToken(payload), user: payload });
 });
 
+// ============================================================================
+// RANKING GLOBAL ÚNICO (Cacheado no Redis e atualizado a cada 60 segundos)
+// ============================================================================
+let memoryRankingCache = {
+  updatedAt: 0,
+  ranking: []
+};
+
+async function getGlobalRanking(forceRefresh = false) {
+  const now = Date.now();
+  const ttlMs = (ENV.RANKING_CACHE_TTL_SEC || 60) * 1000;
+
+  if (!forceRefresh) {
+    // 1. Tenta ler do Redis Cache primeiro
+    const fromRedis = await getCachedRankingFromRedis();
+    if (fromRedis && Array.isArray(fromRedis.ranking) && fromRedis.ranking.length > 0) {
+      memoryRankingCache = fromRedis;
+      return fromRedis;
+    }
+    // 2. Fallback para o cache em RAM se ainda estiver dentro da janela de 60s
+    if (memoryRankingCache.ranking.length > 0 && now - memoryRankingCache.updatedAt < ttlMs) {
+      return memoryRankingCache;
+    }
+  }
+
+  const combinedMap = new Map();
+
+  // Busca os top jogadores registrados no MongoDB
+  if (getDbStatus()) {
+    try {
+      const mongoTop = await User.find({}, 'username skinColor stats')
+        .sort({
+          'stats.wins': -1,
+          'stats.level': -1,
+          'stats.kills': -1,
+          'stats.xp': -1
+        })
+        .limit(50)
+        .lean();
+
+      for (const u of mongoTop) {
+        const st = normalizeStats(u.stats);
+        const uid = u._id.toString();
+        combinedMap.set(uid, {
+          userId: uid,
+          username: u.username,
+          skinColor: u.skinColor || '#FF3366',
+          level: st.level,
+          wins: st.wins,
+          kills: st.kills,
+          shoves: st.shoves,
+          matches: st.matches,
+          xp: st.xp
+        });
+      }
+    } catch (err) {
+      console.warn('[Ranking Mongo Query Warning]:', err.message);
+    }
+  }
+
+  // Mescla usuários ativos na memória RAM (incluindo convidados/sessão atual)
+  for (const u of memoryUsers.values()) {
+    if (!u || !u.username) continue;
+    const st = normalizeStats(u.stats);
+    const uid = String(u.id || u._id || u.username);
+    if (!combinedMap.has(uid)) {
+      combinedMap.set(uid, {
+        userId: uid,
+        username: u.username,
+        skinColor: u.skinColor || '#00E5FF',
+        level: st.level,
+        wins: st.wins,
+        kills: st.kills,
+        shoves: st.shoves,
+        matches: st.matches,
+        xp: st.xp
+      });
+    }
+  }
+
+  const sorted = Array.from(combinedMap.values())
+    .sort((a, b) => {
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      if (b.level !== a.level) return b.level - a.level;
+      if (b.kills !== a.kills) return b.kills - a.kills;
+      return b.xp - a.xp;
+    })
+    .slice(0, 25)
+    .map((item, idx) => ({
+      rank: idx + 1,
+      ...item
+    }));
+
+  const payload = {
+    updatedAt: now,
+    ttlSeconds: ENV.RANKING_CACHE_TTL_SEC || 60,
+    ranking: sorted
+  };
+
+  memoryRankingCache = payload;
+  await cacheRankingInRedis(payload, ENV.RANKING_CACHE_TTL_SEC || 60);
+  return payload;
+}
+
+// GET /api/auth/me — Sincroniza dados atualizados do usuário no Site e no App Desktop
+router.get('/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!token) {
+      return res.status(401).json({ error: 'Token não informado.' });
+    }
+    const decoded = jwt.verify(token, ENV.JWT_SECRET);
+    const found = await findUserById(decoded.id);
+    if (!found) {
+      return res.json({ user: decoded });
+    }
+    const summary = extractUserSummary(found);
+    return res.json({
+      user: {
+        id: summary.id,
+        username: summary.username,
+        skinColor: summary.skinColor,
+        stats: summary.stats,
+        isGuest: Boolean(decoded.isGuest)
+      }
+    });
+  } catch (err) {
+    return res.status(401).json({ error: 'Sessão inválida ou expirada.' });
+  }
+});
+
 router.updateUserMatchStats = updateUserMatchStats;
 router.normalizeStats = normalizeStats;
 router.getFriendsState = getFriendsState;
@@ -666,5 +800,6 @@ router.respondToFriendRequest = respondToFriendRequest;
 router.removeFriend = removeFriend;
 router.setMemoryUser = setMemoryUser;
 router.findUserById = findUserById;
+router.getGlobalRanking = getGlobalRanking;
 
 module.exports = router;

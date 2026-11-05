@@ -30,6 +30,77 @@
 </head>
 
 <body>
+  <!-- ==================================================================== -->
+  <!-- TELA DE LOADING INICIAL (ESTILO CLASH ROYALE / BRAWL STARS)          -->
+  <!-- Verifica e baixa atualizações no exato momento em que abre o jogo!   -->
+  <!-- ==================================================================== -->
+  <div id="cr-loading-overlay" class="cr-loading-overlay">
+    <div class="cr-loading-center">
+      <div class="logo-badge">PLATAFORMA OFICIAL • PC &amp; WEB</div>
+      <h1 class="game-logo cr-logo">SHOVE<span>.IO</span></h1>
+      <p class="cr-tagline">Arena 3D Multiplayer em Tempo Real</p>
+
+      <!-- Card de Bloqueio de Atualização no Loading (Aparece se houver nova versão) -->
+      <div id="cr-update-lock-box" class="cr-update-lock-box hidden">
+        <strong id="cr-update-lock-title" class="cr-update-lock-title">ATUALIZAÇÃO OBRIGATÓRIA DISPONÍVEL!</strong>
+        <p id="cr-update-lock-desc" class="cr-update-lock-desc">
+          Uma nova versão do Shove.io foi lançada. Atualize para entrar na arena!
+        </p>
+        <div class="cr-update-actions">
+          <button type="button" id="btn-cr-update-now" class="btn-success btn-3d">
+            ATUALIZAR E REINICIAR AGORA
+          </button>
+          <a id="link-cr-download-installer" href="#" target="_blank" rel="noopener" class="btn-accent btn-3d hidden">
+            BAIXAR NOVO INSTALADOR (.EXE)
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="cr-loading-bottom">
+      <div class="cr-loading-status-row">
+        <span id="cr-loading-status-text">Verificando atualizações...</span>
+        <strong id="cr-loading-pct">15%</strong>
+      </div>
+      <div class="cr-loading-bar-track">
+        <div id="cr-loading-bar-fill" class="cr-loading-bar-fill" style="width: 15%"></div>
+      </div>
+      <div class="cr-loading-version-footer">
+        <span id="cr-version-label">Versão v1.1.0</span>
+        <span>Servidor: Discloud API + Redis Cache</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================================================================== -->
+  <!-- MODAL DE ATUALIZAÇÃO EM TEMPO REAL PARA QUEM JÁ ESTÁ ONLINE          -->
+  <!-- Aparece imediatamente quando uma atualização sobe no servidor!       -->
+  <!-- ==================================================================== -->
+  <div id="live-update-modal" class="live-update-modal hidden" role="dialog" aria-modal="true">
+    <div class="glass-card live-update-card">
+      <span class="logo-badge">NOVA VERSÃO LANÇADA</span>
+      <h2 id="live-update-title" class="live-update-title">ATUALIZAÇÃO DISPONÍVEL!</h2>
+      <p id="live-update-notes" class="live-update-notes">
+        Uma nova versão do Shove.io acabou de chegar! Atualize agora para continuar jogando com todos os jogadores.
+      </p>
+
+      <div id="live-update-progress-box" class="live-update-progress-box hidden">
+        <div class="cr-loading-status-row">
+          <span id="live-update-progress-label">Baixando atualização...</span>
+          <strong id="live-update-progress-pct">0%</strong>
+        </div>
+        <div class="cr-loading-bar-track">
+          <div id="live-update-progress-fill" class="cr-loading-bar-fill" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <div class="live-update-btns">
+        <button type="button" id="btn-live-update-now" class="btn-success btn-3d" style="width: 100%;">
+          ATUALIZAR JOGO AGORA
+        </button>
+      </div>
+    </div>
+  </div>
   <!-- Barra Superior Esquerda: Medidor de Ping + Quantidade de Jogadores Online -->
   <div id="top-telemetry-bar" class="top-telemetry-bar">
     <div id="ping-widget" class="telemetry-pill" title="Latência com o Servidor">
@@ -56,11 +127,27 @@
 
   <!-- Camada de Interface do Lobby e Login (UI Overlay com Scroll Corrigido) -->
   <main id="lobby-ui-wrapper" class="ui-wrapper">
-    <!-- Cabeçalho / Logo -->
+    <!-- Cabeçalho / Logo do Site + Botão Oficial para Instalar o Jogo no PC -->
     <header class="brand-header">
-      <div class="logo-badge">ARENA ATÉ 15 JOGADORES</div>
+      <div class="logo-badge">ARENA ATÉ 15 JOGADORES • WEB &amp; DESKTOP APP</div>
       <h1 class="game-logo">SHOVE<span>.IO</span></h1>
       <p class="game-tagline">Agarre, carregue a força e jogue para fora da arena!</p>
+
+      <!-- Barra de Instalação do Jogo Desktop (Oculta automaticamente quando aberto dentro do App Electron) -->
+      <div id="portal-download-banner" class="portal-download-banner">
+        <a id="btn-download-desktop-app" href="https://github.com/SEU_USUARIO_GITHUB/shove-io/releases/latest"
+          target="_blank" rel="noopener" class="btn-download-exe btn-3d">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+            class="lucide-icon">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" x2="12" y1="15" y2="3" />
+          </svg>
+          <span>INSTALAR JOGO NO PC (.EXE)</span>
+        </a>
+        <span id="portal-version-badge" class="portal-version-badge">v1.1.0 • Windows / Em breve na Steam</span>
+      </div>
     </header>
 
     <!-- ================================================================== -->
@@ -160,8 +247,8 @@
           </div>
         </div>
 
-        <!-- Abas do Lobby: Jogar | Amigos | Controles -->
-        <div class="lobby-nav-tabs">
+        <!-- Abas do Portal/Lobby: Jogar | Ranking (Cache 60s) | Amigos | Controles -->
+        <div class="lobby-nav-tabs four-tabs">
           <button type="button" class="lobby-tab-btn active" data-lobby-tab="play">
             <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
               stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
@@ -174,6 +261,19 @@
                 d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z" />
             </svg>
             <span>Jogar</span>
+          </button>
+          <button type="button" class="lobby-tab-btn" data-lobby-tab="ranking">
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide-icon">
+              <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+              <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+              <path d="M4 22h16" />
+              <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+              <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+              <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+            </svg>
+            <span>Ranking</span>
           </button>
           <button type="button" class="lobby-tab-btn" data-lobby-tab="friends">
             <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none"
@@ -339,6 +439,49 @@
             <button type="button" id="btn-leave-room" class="btn-leave-room">
               Sair da Sala
             </button>
+          </div>
+        </div>
+
+        <!-- ============================================================== -->
+        <!-- ABA DE RANKING GLOBAL ÚNICO (CACHE REDIS 60 SEGUNDOS)          -->
+        <!-- ============================================================== -->
+        <div id="lobby-view-ranking" class="ranking-panel hidden">
+          <div class="public-rooms-box">
+            <div class="public-rooms-header">
+              <span class="icon-text-inline">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"
+                  class="lucide-icon">
+                  <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+                  <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+                  <path d="M4 22h16" />
+                  <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+                  <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+                  <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+                </svg>
+                <span>Ranking Global (Cache API 60s)</span>
+              </span>
+              <button type="button" id="btn-refresh-ranking" class="btn-small-outline">Atualizar</button>
+            </div>
+
+            <div class="ranking-table-wrap">
+              <table class="ranking-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Jogador</th>
+                    <th>Vitórias</th>
+                    <th>Kills</th>
+                    <th>XP</th>
+                  </tr>
+                </thead>
+                <tbody id="ranking-table-body">
+                  <tr>
+                    <td colspan="5" class="empty-rooms-msg">Carregando ranking do cache da API...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 

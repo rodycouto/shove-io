@@ -202,6 +202,57 @@ async function deleteRoomFromRedis(roomId) {
   } catch (_) {}
 }
 
+/**
+ * Salva a Tabela Única de Ranking no Redis com TTL de 60 segundos.
+ */
+async function cacheRankingInRedis(rankingPayload, ttlSeconds = 60) {
+  if (!getRedisStatus() || !rankingPayload) return;
+  try {
+    await redisClient.set(
+      'shove:ranking:global',
+      JSON.stringify(rankingPayload),
+      'EX',
+      Math.max(10, Number(ttlSeconds) || 60)
+    );
+  } catch (_) {}
+}
+
+/**
+ * Lê a Tabela Única de Ranking em cache no Redis.
+ */
+async function getCachedRankingFromRedis() {
+  if (!getRedisStatus()) return null;
+  try {
+    const raw = await redisClient.get('shove:ranking:global');
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Salva os metadados da versão ativa do App no Redis para sincronia imediata.
+ */
+async function cacheAppVersionInRedis(versionInfo) {
+  if (!getRedisStatus() || !versionInfo) return;
+  try {
+    await redisClient.set('shove:app:version', JSON.stringify(versionInfo));
+  } catch (_) {}
+}
+
+/**
+ * Busca os metadados da versão ativa do App no Redis.
+ */
+async function getCachedAppVersionFromRedis() {
+  if (!getRedisStatus()) return null;
+  try {
+    const raw = await redisClient.get('shove:app:version');
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 module.exports = {
   connectRedis,
   getRedisStatus,
@@ -210,5 +261,10 @@ module.exports = {
   getCachedUserFromRedis,
   getCachedUserIdByUsername,
   cacheRoomInRedis,
-  deleteRoomFromRedis
+  deleteRoomFromRedis,
+  cacheRankingInRedis,
+  getCachedRankingFromRedis,
+  cacheAppVersionInRedis,
+  getCachedAppVersionFromRedis
 };
+

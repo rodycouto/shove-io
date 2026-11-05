@@ -1,0 +1,41 @@
+name: Gerar Instalador Windows (.exe) e Publicar Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependências e binário do Electron
+        run: |
+          npm install
+          node node_modules/electron/install.js
+
+      - name: Compilar Instalador .exe e Publicar no GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --x64 --publish always
+
+      - name: Salvar Instalador .exe como Artefato para Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shove-io-Windows-Installer
+          path: |
+            release-build/*.exe
+            release-build/latest.yml
